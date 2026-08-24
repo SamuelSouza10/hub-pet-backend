@@ -25,4 +25,15 @@ router.delete('/:id/cancelar',                controller.cancelarComPrazo);
 router.post('/agenda-config',                 controller.salvarConfigAgenda);
 router.post('/avaliar',                       controller.avaliarMedico);
 
+// ✅ NOVO: observação de ida e volta (tutor edita a própria observação;
+// profissional escreve a resposta) — construídas numa rodada anterior,
+// mas essa integração no arquivo de rotas real só dava pra fazer agora
+// que você mandou o arquivo.
+router.put('/:id/observacao-tutor',        controller.salvarObservacaoTutor);
+router.put('/:id/observacao-profissional', controller.salvarObservacaoProfissional);
+
+// ✅ NOVO: rota do dia — visitas confirmadas de hoje do prestador de
+// serviço, em ordem de horário.
+router.get('/rota-hoje', controller.listarRotaHoje);
+
 module.exports = router;

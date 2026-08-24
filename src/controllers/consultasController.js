@@ -89,7 +89,7 @@ exports.consultasPaciente = async (req, res) => {
     if (perfil_id) {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade, m.foto_url, m.telefone AS medico_telefone
+          m.especialidade, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -99,7 +99,7 @@ exports.consultasPaciente = async (req, res) => {
     } else {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade, m.foto_url, m.telefone AS medico_telefone
+          m.especialidade, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -437,6 +437,87 @@ exports.avaliacoesMedicoMe = async (req, res) => {
     res.json({ avaliacoes: result.rows, media, total });
   } catch (err) {
     console.error('Erro avaliacoesMedicoMe:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NOVO: observação de ida e volta — alternativa simples a um
+// chat completo. Uma observação do tutor, uma resposta do
+// profissional, sem histórico de conversa. Como já usam SELECT c.*
+// em consultasMedico/consultasPaciente, essas colunas já aparecem
+// nas respostas existentes sem precisar mudar mais nada.
+// ═══════════════════════════════════════════════════════════════
+
+// ── Tutor escreve/edita a própria observação ──────────────────────
+// ✅ CORRIGIDO: usa o campo `observacao` que já existia desde
+// criarConsulta (era escrito só na hora de agendar) — não um campo
+// novo duplicado. Agora também dá pra editar depois de já ter agendado.
+exports.salvarObservacaoTutor = async (req, res) => {
+  try {
+    const paciente_id = req.usuario.id;
+    const { id } = req.params;
+    const { observacao } = req.body;
+
+    const result = await pool.query(
+      `UPDATE consultas SET observacao = $1
+       WHERE id = $2 AND paciente_id = $3 RETURNING id, observacao`,
+      [observacao || '', id, paciente_id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ erro: 'Agendamento não encontrado' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Erro salvarObservacaoTutor:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ── Profissional escreve/edita a resposta ─────────────────────────
+exports.salvarObservacaoProfissional = async (req, res) => {
+  try {
+    const medico_id = req.usuario.id;
+    const { id } = req.params;
+    const { observacao } = req.body;
+
+    const result = await pool.query(
+      `UPDATE consultas SET observacao_profissional = $1
+       WHERE id = $2 AND medico_id = $3 RETURNING id, observacao_profissional`,
+      [observacao || '', id, medico_id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ erro: 'Agendamento não encontrado' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Erro salvarObservacaoProfissional:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NOVO: rota do dia — visitas confirmadas de hoje, em ordem de
+// horário, com endereço de cada uma. Recurso Pro do prestador de
+// serviço (passeador, pet sitter, etc).
+//
+// ⚠️ Sem cálculo de distância real — isso exigiria geocodificar o
+// endereço de cada consulta (lat/lng), o que não temos hoje. Em vez
+// de inventar um número impreciso, cada parada devolve o endereço em
+// texto puro, pronto pra abrir num app de mapas de verdade.
+// ═══════════════════════════════════════════════════════════════
+exports.listarRotaHoje = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const hoje = new Date();
+    const dataHoje = `${String(hoje.getDate()).padStart(2, '0')}/${String(hoje.getMonth() + 1).padStart(2, '0')}/${hoje.getFullYear()}`;
+
+    const result = await pool.query(`
+      SELECT id, nome_perfil, horario, endereco, especialidade
+      FROM consultas
+      WHERE medico_id = $1 AND data = $2 AND status = 'aceito'
+      ORDER BY horario ASC
+    `, [usuario_id, dataHoje]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Erro listarRotaHoje:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
   }
 };
