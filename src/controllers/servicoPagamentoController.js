@@ -27,6 +27,21 @@ exports.listarPrecos = async (req, res) => {
   }
 };
 
+// ✅ NOVO: versão pública (sem login) — pro tutor ver o preço de um
+// profissional específico antes de agendar, na tela de detalhes.
+// Reaproveita a mesma função de serviço, só que com o medico_id vindo
+// da URL em vez do usuário autenticado.
+exports.listarPrecosPublico = async (req, res) => {
+  try {
+    const { medico_id } = req.params;
+    const lista = await servico.listarPrecosServicos(medico_id);
+    res.json(lista);
+  } catch (err) {
+    console.error('Erro listarPrecosPublico:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
 // ── Declara/atualiza o preço de um serviço ───────────────────────
 exports.salvarPreco = async (req, res) => {
   try {

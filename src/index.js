@@ -52,6 +52,16 @@ const comportamentoRoutes = require('./routes/fichaComportamento');
 const prontuarioClinicaRoutes = require('./routes/prontuarioClinica');
 const rastreamentoRoutes = require('./routes/rastreamento');
 const calculadorasRoutes = require('./routes/calculadoras');
+// ✅ NOVO: area de adocao de animais
+const adocaoRoutes = require('./routes/adocao');
+// ✅ NOVO: ferramenta de adestramento (sessoes + checklist de comandos)
+const treinamentoRoutes = require('./routes/treinamento');
+// ✅ NOVO: checklist de medicacao (planos + doses administradas)
+const medicacaoRoutes = require('./routes/medicacao');
+// ✅ NOVO: tag de emergencia com QR code
+const tagEmergenciaRoutes = require('./routes/tagEmergencia');
+// ✅ NOVO: perfil de hospedagem (rotina + compatibilidade)
+const hospedagemRoutes = require('./routes/hospedagem');
 
 app.use('/auth',      authRoutes);
 app.use('/medicos',   medicosRoutes);
@@ -68,6 +78,11 @@ app.use('/equipe',    equipeRoutes);
 app.use('/comportamento', comportamentoRoutes);
 app.use('/prontuario-clinica', prontuarioClinicaRoutes);
 app.use('/rastreamento', rastreamentoRoutes);
+app.use('/adocao', adocaoRoutes);
+app.use('/treinamento', treinamentoRoutes);
+app.use('/medicacao', medicacaoRoutes);
+app.use('/tags', tagEmergenciaRoutes);
+app.use('/hospedagem', hospedagemRoutes);
 app.use('/calculadoras', calculadorasRoutes);
 
 const server = app.listen(PORT, '0.0.0.0', () => {

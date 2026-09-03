@@ -105,7 +105,7 @@ exports.buscarMedicoPorId = async (req, res) => {
         u.id, u.nome,
         m.especialidade, m.endereco, m.foto_url, m.nota,
         m.cidade, m.crm, m.valor_consulta, m.tipo_conta,
-        m.exames_procedimentos
+        m.exames_procedimentos, m.telemedicina, m.atendimento_domiciliar
       FROM usuarios u
       JOIN medicos m ON m.usuario_id = u.id
       WHERE u.id = $1 AND m.status_verificacao = 'aprovado'

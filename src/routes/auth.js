@@ -17,6 +17,9 @@ router.post('/carimbo', auth, authController.salvarCarimbo);
 router.post('/push-token', auth, authController.salvarPushToken);
 router.post('/geocodificar', auth, authController.geocodificarMedico);
 router.get('/carimbo',  auth, authController.buscarCarimbo);
+// ✅ NOVO: checa pendência de pagamento antes de mostrar a confirmação
+// de exclusão no frontend.
+router.get('/posso-excluir-conta', auth, authController.podeExcluirConta);
 router.delete('/excluir',  auth,  authController.excluirConta);
 router.put('/alterar-senha', auth, authController.alterarSenha);
 router.post('/recuperar-senha', authController.recuperarSenha);
@@ -28,6 +31,8 @@ router.get('/verificar-email', authController.verificarEmail);
 // no aparelho, nunca chegava no backend).
 router.put('/atualizar-perfil-medico', auth, authController.atualizarPerfilMedico);
 router.get('/meu-perfil-profissional', auth, authController.buscarMeuPerfilProfissional);
+// ✅ NOVO: identidade basica (id), funciona pra tutor e profissional
+router.get('/me', auth, authController.meuId);
 // ✅ NOVO: edita especialidades/exames oferecidos a qualquer momento —
 // não fica preso pra sempre no que foi escolhido no cadastro.
 router.put('/servicos-oferecidos', auth, authController.atualizarServicosOferecidos);

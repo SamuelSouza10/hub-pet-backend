@@ -319,13 +319,55 @@ exports.login = async (req, res) => {
 };
 
 // ── Excluir conta ─────────────────────────────────────────────
+// ✅ NOVO: bloqueia exclusão se existir taxa de mês já FECHADO (mês
+// anterior ao atual) ainda não cobrada — evita que alguém suma da
+// plataforma devendo. Taxas do mês corrente não contam como
+// "pendência" ainda, porque o mês nem fechou.
+async function temPendenciaPagamento(usuario_id) {
+  const mesAtual = new Date().toISOString().slice(0, 7); // 'AAAA-MM'
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(valor_taxa), 0) AS total, COUNT(*) AS quantidade
+     FROM cobrancas_taxa
+     WHERE usuario_id = $1 AND cobrado = false AND mes_referencia < $2`,
+    [usuario_id, mesAtual]
+  );
+  const total = parseFloat(result.rows[0].total);
+  return { pendente: total > 0, total, quantidade: parseInt(result.rows[0].quantidade, 10) };
+}
+
+// ✅ NOVO: o front chama isso ANTES de mostrar a confirmação de
+// exclusão, pra avisar com o valor exato — sem surpresa na hora H.
+exports.podeExcluirConta = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const status = await temPendenciaPagamento(usuario_id);
+    res.json({ pode_excluir: !status.pendente, valor_pendente: status.total, meses_pendentes: status.quantidade });
+  } catch (err) {
+    console.error('Erro podeExcluirConta:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
 exports.excluirConta = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
 
-    await pool.query('DELETE FROM consultas WHERE paciente_id = $1 OR medico_id = $1', [usuario_id]);
-    await pool.query('DELETE FROM agenda_config WHERE medico_id = $1', [usuario_id]);
-    await pool.query('DELETE FROM medicos WHERE usuario_id = $1', [usuario_id]);
+    // ✅ NOVO: checagem no backend também — nunca confiar só na
+    // validação do frontend, alguém poderia chamar a API direto.
+    const status = await temPendenciaPagamento(usuario_id);
+    if (status.pendente) {
+      return res.status(400).json({
+        erro: `Você tem R$ ${status.total.toFixed(2).replace('.', ',')} em taxas pendentes de ${status.quantidade} mês(es) anterior(es). Regularize antes de excluir a conta.`,
+      });
+    }
+
+    // ✅ Todas as tabelas relacionadas já têm ON DELETE CASCADE nas
+    // foreign keys pra usuarios(id) — testado contra banco real,
+    // apagar o usuário já limpa consultas, agenda_config, medicos,
+    // galeria_fotos, checkin, fichas, equipe_medica, prontuário,
+    // ficha_comportamento, templates, solicitações de farmácia,
+    // preços, assinatura e cobranças, tudo em cascata. Não precisa
+    // de DELETE manual pra cada tabela.
     await pool.query('DELETE FROM usuarios WHERE id = $1', [usuario_id]);
 
     res.json({ mensagem: 'Conta excluída com sucesso' });
@@ -396,7 +438,14 @@ exports.buscarMeuPerfilProfissional = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
     const result = await pool.query(
-      'SELECT tipo_conta, tem_entrega, atendimento_domiciliar, telemedicina, intervalo_lembrete_dias, especialidade, exames_procedimentos FROM medicos WHERE usuario_id = $1',
+      // ✅ CORRIGIDO: faltava telefone/endereco/cidade/cep/foto_url —
+      // a tela de configurações usa esses campos pra pré-preencher o
+      // formulário de "Dados do Negócio", e sem eles no SELECT sempre
+      // vinham undefined, mesmo já tendo valor salvo no banco.
+      // ✅ NOVO: vagas_simultaneas — usado pra popular o campo
+      // editável de capacidade paralela em configuracoesprofissional.tsx.
+      // ✅ NOVO: bio também — visível pro tutor no perfil público.
+      'SELECT tipo_conta, tem_entrega, atendimento_domiciliar, telemedicina, intervalo_lembrete_dias, especialidade, exames_procedimentos, telefone, endereco, cidade, cep, foto_url, vagas_simultaneas, bio FROM medicos WHERE usuario_id = $1',
       [usuario_id]
     );
     if (result.rows.length === 0)
@@ -452,7 +501,9 @@ exports.atualizarServicosOferecidos = async (req, res) => {
 exports.atualizarPerfilMedico = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    const { bio, telefone, endereco, cidade, cep, valor_consulta, tem_entrega, atendimento_domiciliar, telemedicina } = req.body;
+    // ✅ NOVO: vagas_simultaneas — quantos atendimentos em paralelo
+    // esse petshop/serviço consegue fazer no mesmo horário.
+    const { bio, telefone, endereco, cidade, cep, valor_consulta, tem_entrega, atendimento_domiciliar, telemedicina, vagas_simultaneas } = req.body;
 
     await pool.query(
       `UPDATE medicos SET
@@ -464,9 +515,10 @@ exports.atualizarPerfilMedico = async (req, res) => {
         valor_consulta         = COALESCE($6, valor_consulta),
         tem_entrega            = COALESCE($7, tem_entrega),
         atendimento_domiciliar = COALESCE($8, atendimento_domiciliar),
-        telemedicina           = COALESCE($9, telemedicina)
-      WHERE usuario_id = $10`,
-      [bio, telefone, endereco, cidade, cep, valor_consulta, tem_entrega, atendimento_domiciliar, telemedicina, usuario_id]
+        telemedicina           = COALESCE($9, telemedicina),
+        vagas_simultaneas      = COALESCE($10, vagas_simultaneas)
+      WHERE usuario_id = $11`,
+      [bio, telefone, endereco, cidade, cep, valor_consulta, tem_entrega, atendimento_domiciliar, telemedicina, vagas_simultaneas, usuario_id]
     );
 
     res.json({ mensagem: 'Perfil atualizado com sucesso' });
@@ -775,6 +827,19 @@ exports.reprovarConta = async (req, res) => {
     res.json({ mensagem: 'Conta reprovada' });
   } catch (err) {
     console.error('Erro reprovarConta:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ✅ NOVO: identidade básica do usuário logado — funciona igual pra
+// tutor e profissional (diferente de buscarMeuPerfilProfissional,
+// que só existe pra quem tem linha em medicos). Usado, por exemplo,
+// pra área de adoção saber se quem está vendo é o dono do anúncio.
+exports.meuId = async (req, res) => {
+  try {
+    res.json({ id: req.usuario.id });
+  } catch (err) {
+    console.error('Erro meuId:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
   }
 };

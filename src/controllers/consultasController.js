@@ -19,21 +19,42 @@ async function enviarPush(pushToken, titulo, corpo) {
 }
 
 const pool = require('../database');
+const crypto = require('crypto');
 
 // ── Criar consulta (paciente solicita) ────────────────────────
+// ✅ NOVO: gera um nome de sala aleatório pra Jitsi Meet — não pode
+// ser previsível (ex: baseado só no id da consulta), senão qualquer
+// um poderia entrar numa consulta alheia só adivinhando a URL.
+function gerarSalaVideo() {
+  return `hubpet-${crypto.randomBytes(12).toString('hex')}`;
+}
+
 exports.criarConsulta = async (req, res) => {
   try {
-    const { medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil } = req.body;
+    // ✅ CORRIGIDO: "eh_telemedicina" era um boolean solto — agora
+    // "tipo_atendimento" ('presencial' | 'teleconsulta' | 'domiciliar')
+    // é a fonte única de verdade. eh_telemedicina continua existindo
+    // (outras telas já dependem dela), mas é CALCULADA aqui a partir
+    // do tipo escolhido, nunca confiando num boolean solto vindo do
+    // app — assim os dois campos nunca podem ficar inconsistentes.
+    const { medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil, endereco_atendimento, cidade_atendimento, tipo_atendimento } = req.body;
     const paciente_id = req.usuario.id;
 
     if (!medico_id || !data || !horario)
       return res.status(400).json({ erro: 'Preencha todos os campos obrigatórios' });
 
+    const tipoAtendimentoVal = ['presencial', 'teleconsulta', 'domiciliar'].includes(tipo_atendimento) ? tipo_atendimento : 'presencial';
+    const ehTelemedicinaVal = tipoAtendimentoVal === 'teleconsulta';
+    const salaVideo = ehTelemedicinaVal ? gerarSalaVideo() : '';
+
+    if (tipoAtendimentoVal === 'domiciliar' && !String(endereco_atendimento || '').trim())
+      return res.status(400).json({ erro: 'Endereço obrigatório pra atendimento domiciliar' });
+
     const result = await pool.query(`
-      INSERT INTO consultas (paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      INSERT INTO consultas (paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil, endereco_atendimento, cidade_atendimento, eh_telemedicina, sala_video, tipo_atendimento)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
-    `, [paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id || null, nome_perfil || null, foto_perfil || null]);
+    `, [paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id || null, nome_perfil || null, foto_perfil || null, endereco_atendimento || '', cidade_atendimento || '', ehTelemedicinaVal, salaVideo, tipoAtendimentoVal]);
 
     const novaConsulta = result.rows[0];
 
@@ -81,6 +102,14 @@ exports.consultasMedico = async (req, res) => {
   }
 };
 
+// ✅ CORRIGIDO: a query original selecionava "m.especialidade" (lista
+// completa de serviços do profissional) com o MESMO nome de coluna de
+// "c.especialidade" (o serviço específico escolhido nessa consulta,
+// tipo "Passeio"). O driver do Postgres mantém só a última ocorrência
+// de cada nome — então toda consulta retornava a lista inteira do
+// profissional em vez do serviço realmente agendado. Renomeado pra
+// "especialidade_profissional", preservando "especialidade" como o
+// serviço da consulta em si.
 exports.consultasPaciente = async (req, res) => {
   try {
     const paciente_id = req.usuario.id;
@@ -89,7 +118,7 @@ exports.consultasPaciente = async (req, res) => {
     if (perfil_id) {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
+          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -99,7 +128,7 @@ exports.consultasPaciente = async (req, res) => {
     } else {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
+          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -159,17 +188,51 @@ exports.cancelarConsulta = async (req, res) => {
   }
 };
 
+// ✅ CORRIGIDO: antes, QUALQUER agendamento existente já bloqueava o
+// horário inteiro pra sempre — certo pro veterinário individual (1
+// pessoa = 1 atendimento por vez), mas errado pra quem tem equipe.
+// Clínica usa a contagem de membros ativos da Equipe Médica; petshop/
+// serviço usam o campo configurável vagas_simultaneas. Só bloqueia o
+// horário quando o número de agendamentos já bate a capacidade.
 exports.horariosOcupados = async (req, res) => {
   try {
     const { medico_id } = req.params;
+
+    const perfilResult = await pool.query(
+      'SELECT tipo_conta, vagas_simultaneas FROM medicos WHERE usuario_id = $1',
+      [medico_id]
+    );
+    const perfil = perfilResult.rows[0];
+
+    let capacidade = 1;
+    if (perfil?.tipo_conta === 'clinica') {
+      const equipeResult = await pool.query(
+        'SELECT COUNT(*) FROM equipe_medica WHERE clinica_id = $1 AND ativo = true',
+        [medico_id]
+      );
+      capacidade = Math.max(1, parseInt(equipeResult.rows[0].count, 10));
+    } else if (perfil?.tipo_conta === 'petshop' || perfil?.tipo_conta === 'servico') {
+      capacidade = Math.max(1, perfil.vagas_simultaneas || 1);
+    }
+
+    // ⚠️ UNION ALL, não UNION — precisa contar CADA consulta
+    // individualmente pra capacidade funcionar; UNION sozinho
+    // removeria linhas "duplicadas" (mesmo data/horario/dia de
+    // consultas diferentes) e subestimaria a ocupação real.
     const result = await pool.query(`
-      SELECT data, horario, dia FROM consultas
-      WHERE medico_id = $1
-        AND (status IN ('pendente', 'aceito', 'remarcar_pendente') OR remarcar_status = 'recusado')
-      UNION
-      SELECT remarcar_data AS data, remarcar_horario AS horario, dia FROM consultas
-      WHERE medico_id = $1 AND status = 'remarcar_pendente' AND remarcar_data IS NOT NULL
-    `, [medico_id]);
+      SELECT data, horario, dia FROM (
+        SELECT data, horario, dia FROM consultas
+        WHERE medico_id = $1
+          AND (status IN ('pendente', 'aceito', 'remarcar_pendente') OR remarcar_status = 'recusado')
+        UNION ALL
+        SELECT remarcar_data AS data, remarcar_horario AS horario, dia FROM consultas
+        WHERE medico_id = $1 AND status = 'remarcar_pendente' AND remarcar_data IS NOT NULL
+      ) AS ocupacoes
+      WHERE data IS NOT NULL AND horario IS NOT NULL
+      GROUP BY data, horario, dia
+      HAVING COUNT(*) >= $2
+    `, [medico_id, capacidade]);
+
     res.json(result.rows);
   } catch (err) {
     console.error('Erro horariosOcupados:', err.message);
@@ -508,8 +571,11 @@ exports.listarRotaHoje = async (req, res) => {
     const hoje = new Date();
     const dataHoje = `${String(hoje.getDate()).padStart(2, '0')}/${String(hoje.getMonth() + 1).padStart(2, '0')}/${hoje.getFullYear()}`;
 
+    // ✅ CORRIGIDO: usava "endereco" (o endereço DO PRÓPRIO prestador,
+    // self-referencing — nunca fez sentido pra rota). Agora usa
+    // "endereco_atendimento", preenchido pelo tutor na hora de marcar.
     const result = await pool.query(`
-      SELECT id, nome_perfil, horario, endereco, especialidade
+      SELECT id, nome_perfil, horario, endereco_atendimento AS endereco, cidade_atendimento, especialidade
       FROM consultas
       WHERE medico_id = $1 AND data = $2 AND status = 'aceito'
       ORDER BY horario ASC
