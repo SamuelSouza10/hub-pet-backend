@@ -1,125 +1,71 @@
-const pool = require('../database');
+const servico = require('../services/servicoPagamento');
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ CAMADA DE ABSTRAÇÃO DE PAGAMENTO
-//
-// Tudo que MUDA se um dia trocarmos pra Split de Pagamentos fica AQUI
-// dentro. As telas e o resto do backend não sabem (nem precisam saber)
-// como o dinheiro se move por trás — só chamam essas funções.
-//
-// Hoje (modelo atual): assinatura mensal simples (profissional paga o
-// H.U.B.) + taxa fixa por solicitação, calculada do preço declarado,
-// cobrada em lote no fim do mês. Nunca tocamos no pagamento entre tutor
-// e profissional.
-//
-// Se um dia migrar pro Split: só essas funções mudam de implementação
-// (passam a usar OAuth por profissional, marketplace_fee, etc.) — o
-// resto do app (telas, tabela de preços, cálculo de taxa) continua
-// igual, porque fala só com essa camada, nunca direto com o Mercado Pago.
-// ═══════════════════════════════════════════════════════════════
+// ── Busca o plano/assinatura atual do profissional logado ───────
+exports.meuPlano = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    let assinatura = await servico.buscarAssinatura(usuario_id);
+    // Rede de segurança: se por algum motivo a conta foi aprovada sem
+    // passar pela criação automática da assinatura grátis, cria agora.
+    if (!assinatura) assinatura = await servico.criarAssinaturaGratis(usuario_id);
+    res.json(assinatura);
+  } catch (err) {
+    console.error('Erro meuPlano:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
 
-// ✅ Taxa única — a mesma pros dois planos (Grátis e Pro). O Pro NÃO
-// desconta na taxa, só desbloqueia ferramenta. Isso evita que o
-// profissional de alto volume renda MENOS pra gente por pagar taxa
-// menor no Pro — quanto mais ele usa o app, mais a gente recebe, sem
-// exceção.
-const PERCENTUAL_TAXA = 0.10; // 10%
+// ── Lista os preços de serviço declarados ────────────────────────
+exports.listarPrecos = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const lista = await servico.listarPrecosServicos(usuario_id);
+    res.json(lista);
+  } catch (err) {
+    console.error('Erro listarPrecos:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
 
-// ── Calcula a taxa fixa a partir do preço declarado ──────────────
-function calcularTaxa(preco) {
-  const preco_num = parseFloat(preco);
-  return Math.round(preco_num * PERCENTUAL_TAXA * 100) / 100;
-}
+// ✅ NOVO: versão pública (sem login) — pro tutor ver o preço de um
+// profissional específico antes de agendar, na tela de detalhes.
+// Reaproveita a mesma função de serviço, só que com o medico_id vindo
+// da URL em vez do usuário autenticado.
+exports.listarPrecosPublico = async (req, res) => {
+  try {
+    const { medico_id } = req.params;
+    const lista = await servico.listarPrecosServicos(medico_id);
+    res.json(lista);
+  } catch (err) {
+    console.error('Erro listarPrecosPublico:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
 
-// ── Profissional declara/atualiza o preço de um serviço ─────────
-async function salvarPrecoServico(usuario_id, servico_id, servico_nome, preco) {
-  const taxa = calcularTaxa(preco);
-  const result = await pool.query(
-    `INSERT INTO precos_servicos (usuario_id, servico_id, servico_nome, preco, taxa)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (usuario_id, servico_id)
-     DO UPDATE SET servico_nome = $3, preco = $4, taxa = $5, atualizado_em = NOW()
-     RETURNING *`,
-    [usuario_id, servico_id, servico_nome, preco, taxa]
-  );
-  return result.rows[0];
-}
+// ── Declara/atualiza o preço de um serviço ───────────────────────
+exports.salvarPreco = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { servico_id, servico_nome, preco } = req.body;
+    if (!servico_id || !servico_nome || !preco || parseFloat(preco) <= 0)
+      return res.status(400).json({ erro: 'Preencha o nome e um preço válido' });
 
-// ── Lista os preços/taxas declarados por um profissional ────────
-async function listarPrecosServicos(usuario_id) {
-  const result = await pool.query(
-    'SELECT * FROM precos_servicos WHERE usuario_id = $1 ORDER BY servico_nome ASC',
-    [usuario_id]
-  );
-  return result.rows;
-}
+    const resultado = await servico.salvarPrecoServico(usuario_id, servico_id, servico_nome, preco);
+    res.json(resultado);
+  } catch (err) {
+    console.error('Erro salvarPreco:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
 
-// ── Registra a taxa acumulada de UM evento (consulta aceita, etc) ─
-// ✅ Não cobra nada em tempo real — só registra que aquilo aconteceu,
-// pra somar no fechamento do mês. É isso que mantém a cobrança "em
-// lote", fora do escopo do Split Payment Fiscal. Taxa é a mesma
-// independente do plano (Grátis ou Pro).
-async function registrarTaxaEvento(usuario_id, referencia_tipo, referencia_id, servico_id) {
-  const preco = await pool.query(
-    'SELECT taxa FROM precos_servicos WHERE usuario_id = $1 AND servico_id = $2',
-    [usuario_id, servico_id]
-  );
-  if (preco.rows.length === 0) return null; // sem preço declarado, sem taxa
-
-  const valor_taxa = preco.rows[0].taxa;
-  const mes_referencia = new Date().toISOString().slice(0, 7); // 'AAAA-MM'
-
-  const result = await pool.query(
-    `INSERT INTO cobrancas_taxa (usuario_id, referencia_tipo, referencia_id, valor_taxa, mes_referencia)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [usuario_id, referencia_tipo, referencia_id, valor_taxa, mes_referencia]
-  );
-  return result.rows[0];
-}
-
-// ── Busca a assinatura atual do profissional ─────────────────────
-async function buscarAssinatura(usuario_id) {
-  const result = await pool.query('SELECT * FROM assinaturas WHERE usuario_id = $1', [usuario_id]);
-  return result.rows[0] || null;
-}
-
-// ── Cria a assinatura Grátis automaticamente (chamado na aprovação
-//    da conta pelo admin — NUNCA no cadastro, conforme decidido) ────
-async function criarAssinaturaGratis(usuario_id) {
-  const result = await pool.query(
-    `INSERT INTO assinaturas (usuario_id, plano, status)
-     VALUES ($1, 'gratis', 'ativa')
-     ON CONFLICT (usuario_id) DO NOTHING
-     RETURNING *`,
-    [usuario_id]
-  );
-  return result.rows[0] || null;
-}
-
-// ── Soma quanto o profissional deve no mês atual (mensalidade + taxas) ─
-async function calcularFechamentoMes(usuario_id) {
-  const mes_referencia = new Date().toISOString().slice(0, 7);
-  const assinatura = await buscarAssinatura(usuario_id);
-  const taxas = await pool.query(
-    `SELECT COALESCE(SUM(valor_taxa), 0) AS total, COUNT(*) AS quantidade
-     FROM cobrancas_taxa WHERE usuario_id = $1 AND mes_referencia = $2 AND cobrado = false`,
-    [usuario_id, mes_referencia]
-  );
-  return {
-    plano: assinatura?.plano || 'gratis',
-    total_taxas: parseFloat(taxas.rows[0].total),
-    quantidade_solicitacoes: parseInt(taxas.rows[0].quantidade, 10),
-    mes_referencia,
-  };
-}
-
-module.exports = {
-  PERCENTUAL_TAXA,
-  calcularTaxa,
-  salvarPrecoServico,
-  listarPrecosServicos,
-  registrarTaxaEvento,
-  buscarAssinatura,
-  criarAssinaturaGratis,
-  calcularFechamentoMes,
+// ── Fechamento do mês atual (mensalidade + taxas acumuladas) ────
+exports.fechamentoMes = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const fechamento = await servico.calcularFechamentoMes(usuario_id);
+    res.json(fechamento);
+  } catch (err) {
+    console.error('Erro fechamentoMes:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
 };
