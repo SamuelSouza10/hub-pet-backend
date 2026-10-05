@@ -114,6 +114,7 @@ async function calcularFechamentoMes(usuario_id) {
 }
 
 module.exports = {
+  PERCENTUAL_TAXA,
   calcularTaxa,
   salvarPrecoServico,
   listarPrecosServicos,

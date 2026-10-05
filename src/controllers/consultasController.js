@@ -20,6 +20,9 @@ async function enviarPush(pushToken, titulo, corpo) {
 
 const pool = require('../database');
 const crypto = require('crypto');
+// ✅ NOVO: quando o profissional recusa uma consulta que já foi paga
+// via Pix (cobrança antecipada), precisa estornar automaticamente.
+const { estornarSeNecessario } = require('./pagamentoMpController');
 
 // ── Criar consulta (paciente solicita) ────────────────────────
 // ✅ NOVO: gera um nome de sala aleatório pra Jitsi Meet — não pode
@@ -29,7 +32,83 @@ function gerarSalaVideo() {
   return `hubpet-${crypto.randomBytes(12).toString('hex')}`;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ NOVO: regra de OCUPAÇÃO de horário e de BLOQUEIO de tutor num
+// lugar só. Antes essas regras existiam apenas dentro de
+// horariosOcupados / verificarBloqueio (o que a TELA consulta), e o
+// criarConsulta não conferia nada — então dois tutores olhando o mesmo
+// horário livre conseguiam reservar os dois, e um tutor bloqueado
+// conseguia agendar chamando a API direto. Agora tela e servidor usam
+// exatamente as mesmas regras, então nunca podem divergir.
+// `db` pode ser o pool ou um client de transação (ambos têm .query).
+// ═══════════════════════════════════════════════════════════════
+
+// Quantas consultas simultâneas o profissional comporta:
+// vet individual = 1 · clínica = membros ativos da equipe ·
+// petshop/serviço = vagas_simultaneas.
+async function capacidadeDoProfissional(db, medico_id) {
+  const perfilResult = await db.query(
+    'SELECT tipo_conta, vagas_simultaneas FROM medicos WHERE usuario_id = $1',
+    [medico_id]
+  );
+  const perfil = perfilResult.rows[0];
+  let capacidade = 1;
+  if (perfil?.tipo_conta === 'clinica') {
+    const equipeResult = await db.query(
+      'SELECT COUNT(*) FROM equipe_medica WHERE clinica_id = $1 AND ativo = true',
+      [medico_id]
+    );
+    capacidade = Math.max(1, parseInt(equipeResult.rows[0].count, 10));
+  } else if (perfil?.tipo_conta === 'petshop' || perfil?.tipo_conta === 'servico') {
+    capacidade = Math.max(1, perfil.vagas_simultaneas || 1);
+  }
+  return capacidade;
+}
+
+// ⚠️ UNION ALL, não UNION — precisa contar CADA consulta
+// individualmente pra capacidade funcionar; UNION sozinho
+// removeria linhas "duplicadas" (mesmo data/horario/dia de
+// consultas diferentes) e subestimaria a ocupação real.
+// Conta consultas ativas E horários já propostos em remarcação.
+// ✅ CORRIGIDO: a query antiga também contava como ocupado qualquer
+// consulta com remarcar_status = 'recusado' — ou seja, toda vez que
+// o tutor RECUSAVA uma remarcação, o horário ORIGINAL (não o
+// proposto) ficava bloqueado para sempre, mesmo a consulta já
+// estando com status = 'cancelada'. Nada no sistema reseta esse
+// campo, então cada remarcação recusada perdia um horário do
+// profissional permanentemente, e nem o próprio tutor conseguia
+// reagendar ali. Consulta cancelada agora libera o horário, como
+// qualquer outra cancelada.
+const SQL_OCUPACOES = `
+  SELECT id, data, horario, dia FROM consultas
+  WHERE medico_id = $1
+    AND status IN ('pendente', 'aceito', 'remarcar_pendente')
+  UNION ALL
+  SELECT id, remarcar_data AS data, remarcar_horario AS horario, dia FROM consultas
+  WHERE medico_id = $1 AND status = 'remarcar_pendente' AND remarcar_data IS NOT NULL
+`;
+
+// Quantas vagas desse horário específico já estão tomadas.
+// `excluirId`: usado ao PROPOR uma remarcação, pra a própria consulta não
+// contar como ocupação do horário novo (ex.: re-propor outro horário depois
+// de já ter uma proposta pendente — sem isso, ela se auto-bloquearia).
+async function contarOcupacao(db, medico_id, data, horario, excluirId = null) {
+  const r = await db.query(
+    `SELECT COUNT(*) FROM (${SQL_OCUPACOES}) AS ocupacoes WHERE data = $2 AND horario = $3 AND id IS DISTINCT FROM $4`,
+    [medico_id, data, horario, excluirId]
+  );
+  return parseInt(r.rows[0].count, 10);
+}
+
+// Regra única do bloqueio por faltas (usada pela tela E pelo agendamento).
+function avaliarBloqueio(u) {
+  const bloqueado = !!(u?.bloqueado_ate && new Date(u.bloqueado_ate) > new Date());
+  const permanente = (u?.faltas || 0) >= 3;
+  return { bloqueado, permanente, faltas: u?.faltas || 0, bloqueado_ate: u?.bloqueado_ate || null };
+}
+
 exports.criarConsulta = async (req, res) => {
+  let client;
   try {
     // ✅ CORRIGIDO: "eh_telemedicina" era um boolean solto — agora
     // "tipo_atendimento" ('presencial' | 'teleconsulta' | 'domiciliar')
@@ -50,31 +129,110 @@ exports.criarConsulta = async (req, res) => {
     if (tipoAtendimentoVal === 'domiciliar' && !String(endereco_atendimento || '').trim())
       return res.status(400).json({ erro: 'Endereço obrigatório pra atendimento domiciliar' });
 
-    const result = await pool.query(`
+    // ✅ NOVO: tutor bloqueado por faltas não agenda — antes só a tela
+    // (marcaconsultas.tsx) barrava; chamando a API direto passava.
+    const uBloq = await pool.query('SELECT faltas, bloqueado_ate FROM usuarios WHERE id = $1', [paciente_id]);
+    const bloqueio = avaliarBloqueio(uBloq.rows[0]);
+    if (bloqueio.bloqueado || bloqueio.permanente) {
+      return res.status(403).json({
+        erro: bloqueio.permanente
+          ? 'Sua conta está bloqueada permanentemente por faltas em consultas anteriores.'
+          : `Sua conta está bloqueada até ${new Date(bloqueio.bloqueado_ate).toLocaleDateString('pt-BR')} por falta em consulta anterior.`,
+        codigo: 'TUTOR_BLOQUEADO',
+        permanente: bloqueio.permanente,
+        bloqueado_ate: bloqueio.bloqueado_ate,
+      });
+    }
+
+    // ✅ NOVO: checagem de vaga + INSERT dentro de UMA transação, com o
+    // registro do profissional travado (FOR UPDATE). Sem a trava, dois
+    // pedidos simultâneos liam "1 vaga livre" ao mesmo tempo e os dois
+    // entravam. Com ela, os pedidos do mesmo profissional passam um de
+    // cada vez, então o segundo já enxerga a vaga tomada.
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const trava = await client.query('SELECT status_verificacao FROM medicos WHERE usuario_id = $1 FOR UPDATE', [medico_id]);
+    if (trava.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ erro: 'Profissional não encontrado' });
+    }
+    // ✅ CORRIGIDO: nada aqui checava se o profissional já tinha sido
+    // aprovado por um admin. A busca pública (medicosController.js) já
+    // escondia quem está "pendente", mas isso é só visibilidade — quem
+    // soubesse o medico_id (ID sequencial, fácil de adivinhar) criava
+    // a consulta direto, mesmo com o CRM/CRMV daquele profissional
+    // nunca verificado por ninguém.
+    if (trava.rows[0].status_verificacao !== 'aprovado') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ erro: 'Esse profissional ainda não foi aprovado.' });
+    }
+
+    // Toque duplo no botão: mesma pessoa, mesmo pet, mesmo horário, ainda ativa.
+    // (Dois PETS diferentes no mesmo horário continuam permitidos.)
+    const duplicada = await client.query(
+      `SELECT 1 FROM consultas
+       WHERE paciente_id = $1 AND medico_id = $2 AND data = $3 AND horario = $4
+         AND perfil_id IS NOT DISTINCT FROM $5
+         AND status IN ('pendente', 'aceito', 'remarcar_pendente') LIMIT 1`,
+      [paciente_id, medico_id, data, horario, perfil_id || null]
+    );
+    if (duplicada.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ erro: 'Você já tem uma solicitação para esse horário.', codigo: 'SOLICITACAO_DUPLICADA' });
+    }
+
+    const capacidade = await capacidadeDoProfissional(client, medico_id);
+    const ocupadas = await contarOcupacao(client, medico_id, data, horario);
+    if (ocupadas >= capacidade) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ erro: 'Esse horário acabou de ser reservado por outra pessoa. Escolha outro horário.', codigo: 'HORARIO_INDISPONIVEL' });
+    }
+
+    const result = await client.query(`
       INSERT INTO consultas (paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil, endereco_atendimento, cidade_atendimento, eh_telemedicina, sala_video, tipo_atendimento)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `, [paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id || null, nome_perfil || null, foto_perfil || null, endereco_atendimento || '', cidade_atendimento || '', ehTelemedicinaVal, salaVideo, tipoAtendimentoVal]);
+    await client.query('COMMIT');
+
+    // ✅ Solta a conexão da transação AGORA, antes de qualquer outro acesso ao
+    // banco. Segurá-la até o `finally` fazia cada pedido bem-sucedido precisar
+    // de uma SEGUNDA conexão (busca do push token) enquanto ainda prendia a
+    // primeira: com tantos pedidos simultâneos quanto o tamanho do pool (10),
+    // todos ficavam esperando uma conexão que ninguém liberava e o servidor
+    // inteiro travava (nem um GET simples respondia).
+    client.release();
+    client = null;
 
     const novaConsulta = result.rows[0];
 
-    const nomePaciente = (nome_perfil && String(nome_perfil).trim()) 
-      ? String(nome_perfil).trim() 
-      : await pool.query('SELECT nome FROM usuarios WHERE id = $1', [paciente_id])
-          .then(r => r.rows[0]?.nome || 'Um paciente');
-    console.log('DEBUG criarConsulta - paciente_id:', paciente_id, 'nome_perfil:', nome_perfil, 'nomePaciente:', nomePaciente);
+    // Notificação é "melhor esforço": a consulta JÁ foi criada, então uma falha
+    // aqui não pode virar erro 500 pro tutor (ele tentaria de novo à toa).
+    try {
+      const nomePaciente = (nome_perfil && String(nome_perfil).trim()) 
+        ? String(nome_perfil).trim() 
+        : await pool.query('SELECT nome FROM usuarios WHERE id = $1', [paciente_id])
+            .then(r => r.rows[0]?.nome || 'Um paciente');
+      console.log('DEBUG criarConsulta - paciente_id:', paciente_id, 'nome_perfil:', nome_perfil, 'nomePaciente:', nomePaciente);
 
-    const medicoNotif = await pool.query('SELECT push_token FROM usuarios WHERE id = $1', [medico_id]);
-    await enviarPush(
-      medicoNotif.rows[0]?.push_token,
-      '📅 Nova consulta solicitada!',
-      `${nomePaciente} solicitou uma consulta para ${data} às ${horario}.`
-    );
+      const medicoNotif = await pool.query('SELECT push_token FROM usuarios WHERE id = $1', [medico_id]);
+      await enviarPush(
+        medicoNotif.rows[0]?.push_token,
+        '📅 Nova consulta solicitada!',
+        `${nomePaciente} solicitou uma consulta para ${data} às ${horario}.`
+      );
+    } catch (errNotif) {
+      console.error('Aviso: consulta criada, mas falhou ao notificar o profissional:', errNotif.message);
+    }
 
     res.status(201).json(novaConsulta);
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro criarConsulta:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -163,6 +321,11 @@ exports.responderConsulta = async (req, res) => {
     if (status === 'aceito') {
       await enviarPush(pushToken, '✅ Consulta confirmada!', `${nomeMedico} confirmou sua consulta para ${consulta.data} às ${consulta.horario}.`);
     } else {
+      // ✅ NOVO: se o tutor já tinha pago via Pix antes da confirmação
+      // (única forma de pagamento liberada antes de aceitar — ver
+      // pagamentoMpController.js), estorna na hora. "Melhor esforço":
+      // nunca atrasa nem impede a resposta ao profissional.
+      estornarSeNecessario(consulta.id).catch((e) => console.error('Erro no estorno automático:', e.message));
       await enviarPush(pushToken, '❌ Consulta recusada', `${nomeMedico} não pôde atender sua solicitação para ${consulta.data}.`);
     }
     res.json(consulta);
@@ -197,37 +360,10 @@ exports.cancelarConsulta = async (req, res) => {
 exports.horariosOcupados = async (req, res) => {
   try {
     const { medico_id } = req.params;
+    const capacidade = await capacidadeDoProfissional(pool, medico_id);
 
-    const perfilResult = await pool.query(
-      'SELECT tipo_conta, vagas_simultaneas FROM medicos WHERE usuario_id = $1',
-      [medico_id]
-    );
-    const perfil = perfilResult.rows[0];
-
-    let capacidade = 1;
-    if (perfil?.tipo_conta === 'clinica') {
-      const equipeResult = await pool.query(
-        'SELECT COUNT(*) FROM equipe_medica WHERE clinica_id = $1 AND ativo = true',
-        [medico_id]
-      );
-      capacidade = Math.max(1, parseInt(equipeResult.rows[0].count, 10));
-    } else if (perfil?.tipo_conta === 'petshop' || perfil?.tipo_conta === 'servico') {
-      capacidade = Math.max(1, perfil.vagas_simultaneas || 1);
-    }
-
-    // ⚠️ UNION ALL, não UNION — precisa contar CADA consulta
-    // individualmente pra capacidade funcionar; UNION sozinho
-    // removeria linhas "duplicadas" (mesmo data/horario/dia de
-    // consultas diferentes) e subestimaria a ocupação real.
     const result = await pool.query(`
-      SELECT data, horario, dia FROM (
-        SELECT data, horario, dia FROM consultas
-        WHERE medico_id = $1
-          AND (status IN ('pendente', 'aceito', 'remarcar_pendente') OR remarcar_status = 'recusado')
-        UNION ALL
-        SELECT remarcar_data AS data, remarcar_horario AS horario, dia FROM consultas
-        WHERE medico_id = $1 AND status = 'remarcar_pendente' AND remarcar_data IS NOT NULL
-      ) AS ocupacoes
+      SELECT data, horario, dia FROM (${SQL_OCUPACOES}) AS ocupacoes
       WHERE data IS NOT NULL AND horario IS NOT NULL
       GROUP BY data, horario, dia
       HAVING COUNT(*) >= $2
@@ -317,28 +453,70 @@ exports.marcarStatus = async (req, res) => {
 };
 
 exports.remarcarConsulta = async (req, res) => {
+  let client;
   try {
     const { id } = req.params;
     const { remarcar_data, remarcar_horario } = req.body;
     const medico_id = req.usuario.id;
-    const result = await pool.query(
+
+    if (!remarcar_data || !remarcar_horario)
+      return res.status(400).json({ erro: 'Informe a nova data e horário' });
+
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    // Confirma posse ANTES de checar vaga — senão um id de consulta alheia
+    // (ou inexistente) revelaria a agenda do profissional via o 409.
+    const existe = await client.query('SELECT id FROM consultas WHERE id = $1 AND medico_id = $2', [id, medico_id]);
+    if (existe.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ erro: 'Consulta não encontrada' });
+    }
+
+    // ✅ NOVO: antes, o profissional podia propor qualquer horário, mesmo já
+    // lotado por outras consultas — o tutor só descobria o conflito ao
+    // aceitar (ou nunca, já que a tela nem mostra esse erro nesse fluxo).
+    // Mesma trava e mesma regra de capacidade do criarConsulta, pra tela e
+    // servidor nunca divergirem sobre o que está "ocupado".
+    await client.query('SELECT 1 FROM medicos WHERE usuario_id = $1 FOR UPDATE', [medico_id]);
+    const capacidade = await capacidadeDoProfissional(client, medico_id);
+    const ocupadas = await contarOcupacao(client, medico_id, remarcar_data, remarcar_horario, Number(id));
+    if (ocupadas >= capacidade) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ erro: 'Esse horário já está ocupado. Proponha outro horário para o tutor.', codigo: 'HORARIO_INDISPONIVEL' });
+    }
+
+    const result = await client.query(
       `UPDATE consultas SET remarcar_data = $1, remarcar_horario = $2, remarcar_status = 'pendente', status = 'remarcar_pendente'
        WHERE id = $3 AND medico_id = $4 RETURNING *`,
       [remarcar_data, remarcar_horario, id, medico_id]
     );
-    if (result.rows.length === 0)
-      return res.status(404).json({ erro: 'Consulta não encontrada' });
+    await client.query('COMMIT');
+    client.release();
+    client = null;
+
     const consultaRemarcar = result.rows[0];
-    const pacienteRemarcar = await pool.query('SELECT push_token FROM usuarios WHERE id = $1', [consultaRemarcar.paciente_id]);
-    await enviarPush(
-      pacienteRemarcar.rows[0]?.push_token,
-      '🔄 Remarcação proposta',
-      `O médico propôs remarcar sua consulta para ${remarcar_data} às ${remarcar_horario}. Aceite ou recuse no app.`
-    );
-    res.json(result.rows[0]);
+
+    // Notificação é "melhor esforço": a remarcação já foi registrada, então
+    // uma falha aqui não pode virar erro 500 pro profissional.
+    try {
+      const pacienteRemarcar = await pool.query('SELECT push_token FROM usuarios WHERE id = $1', [consultaRemarcar.paciente_id]);
+      await enviarPush(
+        pacienteRemarcar.rows[0]?.push_token,
+        '🔄 Remarcação proposta',
+        `O médico propôs remarcar sua consulta para ${remarcar_data} às ${remarcar_horario}. Aceite ou recuse no app.`
+      );
+    } catch (errNotif) {
+      console.error('Aviso: remarcação registrada, mas falhou ao notificar o tutor:', errNotif.message);
+    }
+
+    res.json(consultaRemarcar);
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro remarcarConsulta:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -415,10 +593,7 @@ exports.verificarBloqueio = async (req, res) => {
   try {
     const paciente_id = req.usuario.id;
     const result = await pool.query('SELECT faltas, bloqueado_ate FROM usuarios WHERE id = $1', [paciente_id]);
-    const u = result.rows[0];
-    const bloqueado = u?.bloqueado_ate && new Date(u.bloqueado_ate) > new Date();
-    const permanente = u?.faltas >= 3;
-    res.json({ bloqueado: !!bloqueado, permanente, faltas: u?.faltas || 0, bloqueado_ate: u?.bloqueado_ate || null });
+    res.json(avaliarBloqueio(result.rows[0]));
   } catch (err) {
     console.error('Erro verificarBloqueio:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });

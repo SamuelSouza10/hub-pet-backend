@@ -1,4 +1,7 @@
 const pool = require('../database');
+// ✅ NOVO: se a farmácia cancelar uma solicitação que já foi paga,
+// precisa estornar automaticamente.
+const { estornarSeNecessarioFarmacia } = require('./pagamentoMpController');
 
 // ✅ Helper de push notification — mesmo padrão já usado em
 // consultasController.js. Notifica o TUTOR (dispositivo diferente do
@@ -126,6 +129,31 @@ exports.listarReceitasPendentes = async (req, res) => {
   }
 };
 
+// ── Tutor acompanha TODAS as próprias receitas, já escolhidas ou não
+// (inclui orçamento e telefone da farmácia, pra ligar se precisar) ──
+// ✅ NOVO: faltava um jeito do tutor ver o andamento depois de
+// escolher a farmácia — sem isso, ele nunca ficava sabendo que um
+// orçamento chegou nem tinha como pagar.
+exports.listarMinhasReceitas = async (req, res) => {
+  try {
+    const paciente_id = req.usuario.id;
+    const result = await pool.query(`
+      SELECT s.*, u.nome AS veterinario_nome,
+             u2.nome AS farmacia_nome, m2.telefone AS farmacia_telefone, m2.tipo_conta AS destino_tipo_conta
+      FROM solicitacoes_farmacia s
+      JOIN usuarios u ON u.id = s.veterinario_id
+      LEFT JOIN usuarios u2 ON u2.id = s.farmacia_id
+      LEFT JOIN medicos m2 ON m2.usuario_id = s.farmacia_id
+      WHERE s.paciente_id = $1 AND s.status != 'aguardando_escolha'
+      ORDER BY s.criado_em DESC
+    `, [paciente_id]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Erro listarMinhasReceitas:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
 // ── Tutor escolhe pra qual farmácia/petshop mandar ───────────────
 // ✅ Só aqui o destino é de fato escolhido — sempre pelo TUTOR, nunca
 // pelo veterinário. É essa troca que resolve o problema ético.
@@ -233,6 +261,12 @@ exports.atualizarStatus = async (req, res) => {
       return res.status(404).json({ erro: 'Solicitação não encontrada' });
 
     const item = result.rows[0];
+
+    // ✅ NOVO: "melhor esforço" — nunca atrasa nem impede a resposta à
+    // farmácia, só dispara em segundo plano.
+    if (status === 'cancelada') {
+      estornarSeNecessarioFarmacia(item.id).catch((e) => console.error('Erro no estorno automático (farmácia):', e.message));
+    }
 
     if (await ehPro(destino_id) && item.paciente_id) {
       const MENSAGENS = {

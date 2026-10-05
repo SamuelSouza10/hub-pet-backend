@@ -1,15 +1,47 @@
-﻿const express    = require('express');
+﻿// ✅ NOVO: carrega o arquivo .env (se existir) ANTES de qualquer outro
+// require — essencial pra rodar localmente, já que authController.js
+// lê process.env.JWT_SECRET assim que é importado. No Railway isso
+// não faz diferença (lá as variáveis já vêm do painel), mas não
+// atrapalha nada.
+require('dotenv').config();
+
+const express    = require('express');
 const cors       = require('cors');
+const path       = require('path');
 // ✅ NOVO: precisa rodar `npm install node-cron` no projeto antes de subir
 // essa versão — sem isso o require abaixo quebra o servidor inteiro.
 const cron       = require('node-cron');
 
 const app  = express();
+// Railway coloca 1 proxy na frente do servidor. Sem isso, req.ip vira o IP do
+// proxy e os rate limits (login, cadastro, recuperacao de senha) passam a valer
+// pro app inteiro em vez de por pessoa.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ✅ NOVO: painel admin e página pública da Tag de Emergência, servidos
+// direto por este mesmo servidor — sem precisar de Netlify nem de conta
+// separada. As duas já chamam a API pelo domínio absoluto do Railway,
+// então funcionam normalmente mesmo sendo servidas daqui.
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/admin.html'));
+});
+app.get('/tag', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/tag-emergencia.html'));
+});
+// ✅ NOVO: Termos de Uso e Política de Privacidade — servidos como
+// páginas públicas, com link fixo (o app aponta pra cá, e dá pra
+// mandar o link pra qualquer um sem precisar estar logado).
+app.get('/termos', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/termos-de-uso.html'));
+});
+app.get('/privacidade', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/politica-privacidade.html'));
+});
 
 // Health check
 app.get('/', (req, res) => {
@@ -27,6 +59,15 @@ const consultasRoutes = require('./routes/consultas');
 // ✅ NOVA: solicitações de receita pra farmácia/petshop — controller e
 // rotas já existiam, mas nunca tinham sido registradas aqui no app
 // principal. Sem essa linha, /farmacia/* sempre caía em 404.
+// ✅ CORRIGIDO: apontava pra 'solicitacoesFarmacia' (versão antiga,
+// onde o VETERINÁRIO escolhia a farmácia/petshop na hora de prescrever
+// — isso fere o Art. XIII do Código de Ética do CFMV, que veda
+// direcionar cliente pra um estabelecimento específico). A versão
+// corrigida (o TUTOR escolhe onde retirar) já existia pronta em
+// solicitacoesFarmacia2, mas nunca tinha sido conectada aqui — o app
+// já espera essa API nova (criarReceita, escolherDestino, etc.), então
+// sem essa troca, prescrever receita já estaria quebrado (404) assim
+// que o app fosse atualizado.
 const farmaciaRoutes  = require('./routes/solicitacoesFarmacia');
 // ✅ NOVA: sistema de assinatura + taxa por serviço.
 const pagamentoRoutes = require('./routes/pagamento');
@@ -62,6 +103,15 @@ const medicacaoRoutes = require('./routes/medicacao');
 const tagEmergenciaRoutes = require('./routes/tagEmergencia');
 // ✅ NOVO: perfil de hospedagem (rotina + compatibilidade)
 const hospedagemRoutes = require('./routes/hospedagem');
+const denunciaRoutes = require('./routes/denuncia');
+const perfilPetRoutes = require('./routes/perfilPet');
+const lembretesRoutes = require('./routes/lembretes');
+const favoritosRoutes = require('./routes/favoritos');
+const cruzamentoRoutes = require('./routes/cruzamento');
+const petsPerdidosRoutes = require('./routes/petsPerdidos');
+const mercadoPagoRoutes = require('./routes/mercadoPago');
+const pagamentoMpRoutes = require('./routes/pagamento-mp');
+const assinaturaProRoutes = require('./routes/assinatura-pro');
 
 app.use('/auth',      authRoutes);
 app.use('/medicos',   medicosRoutes);
@@ -83,6 +133,18 @@ app.use('/treinamento', treinamentoRoutes);
 app.use('/medicacao', medicacaoRoutes);
 app.use('/tags', tagEmergenciaRoutes);
 app.use('/hospedagem', hospedagemRoutes);
+app.use('/denuncias', denunciaRoutes);
+app.use('/perfis-pet', perfilPetRoutes);
+// ⚠️ IMPORTANTE: já existia '/lembretes' pro Lembrete de Banho
+// (petshop) — usar '/lembretes-pessoais' aqui evita colisão entre os
+// dois sistemas diferentes, que por engano ficaram no mesmo prefixo.
+app.use('/lembretes-pessoais', lembretesRoutes);
+app.use('/favoritos', favoritosRoutes);
+app.use('/cruzamento', cruzamentoRoutes);
+app.use('/pets-perdidos', petsPerdidosRoutes);
+app.use('/mercadopago', mercadoPagoRoutes);
+app.use('/pagamento-mp', pagamentoMpRoutes);
+app.use('/assinatura-pro', assinaturaProRoutes);
 app.use('/calculadoras', calculadorasRoutes);
 
 const server = app.listen(PORT, '0.0.0.0', () => {

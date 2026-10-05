@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>H.U.B. Pet — Painel Admin</title>
+<style>
+  :root {
+    --navy: #0d2a3e;
+    --navy-light: rgba(255,255,255,0.08);
+    --verde: #7cb342;
+    --verde-escuro: #5a8a30;
+    --vermelho: #f44336;
+    --azul: #1976d2;
+    --cinza-texto: #7a8a9a;
+    --cinza-claro: #a0aab5;
+    --fundo: #f4f6f8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    background: var(--fundo);
+    color: var(--navy);
+    min-height: 100vh;
+  }
+  a { color: inherit; }
+
+  /* ── Tela de login ── */
+  #tela-login {
+    min-height: 100vh;
+    background: var(--navy);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .login-box {
+    width: 100%;
+    max-width: 380px;
+    text-align: center;
+  }
+  .login-icon {
+    width: 76px; height: 76px;
+    border-radius: 38px;
+    background: rgba(255,255,255,0.08);
+    border: 1.5px solid rgba(255,255,255,0.15);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 34px;
+    margin: 0 auto 16px;
+  }
+  .login-titulo {
+    font-size: 18px; font-weight: 900; color: #fff;
+    letter-spacing: 2px; margin-bottom: 6px;
+  }
+  .login-sub {
+    font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.55);
+    margin-bottom: 32px;
+  }
+  .login-label {
+    display: block; text-align: left;
+    font-size: 10px; font-weight: 800; color: rgba(255,255,255,0.6);
+    letter-spacing: 1.2px; margin-bottom: 7px; margin-left: 2px;
+  }
+  .login-input {
+    width: 100%; height: 50px;
+    background: rgba(255,255,255,0.06);
+    border: 1.5px solid rgba(255,255,255,0.15);
+    border-radius: 12px;
+    padding: 0 16px;
+    font-size: 14px; font-weight: 600; color: #fff;
+    margin-bottom: 16px;
+    outline: none;
+  }
+  .login-input::placeholder { color: #5a7a94; }
+  .login-input:focus { border-color: var(--verde); }
+  .login-erro {
+    font-size: 12px; font-weight: 700; color: #ff6b6b;
+    margin-bottom: 8px; text-align: left;
+  }
+  .login-btn {
+    width: 100%; height: 52px;
+    background: #fff; color: var(--navy);
+    border: none; border-radius: 28px;
+    font-size: 14px; font-weight: 800; letter-spacing: 2px;
+    margin-top: 12px; cursor: pointer;
+  }
+  .login-btn:disabled { opacity: 0.6; cursor: default; }
+
+  /* ── Painel ── */
+  #tela-painel { display: none; }
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy);
+    padding: 20px 20px 22px;
+    border-radius: 0 0 20px 20px;
+  }
+  .header-titulo { font-size: 17px; font-weight: 900; color: #fff; letter-spacing: 1px; }
+  .header-sub { font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.6); margin-top: 3px; }
+  .sair-btn {
+    padding: 9px 16px; background: rgba(255,255,255,0.1);
+    border: none; border-radius: 10px; color: #fff;
+    font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+
+  .conteudo { max-width: 640px; margin: 0 auto; padding: 18px 16px 40px; }
+
+  .empty-state { text-align: center; padding-top: 70px; }
+  .empty-icon { font-size: 52px; margin-bottom: 10px; }
+  .empty-titulo { font-size: 16px; font-weight: 800; color: var(--navy); margin-bottom: 4px; }
+  .empty-texto { font-size: 13px; font-weight: 500; color: var(--cinza-texto); }
+
+  .card {
+    background: #fff; border-radius: 18px; padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .tipo-tag {
+    background: #eef4fa; border-radius: 8px; padding: 5px 11px;
+    font-size: 11px; font-weight: 800; color: var(--azul); letter-spacing: 0.5px;
+  }
+  .data-text { font-size: 11px; font-weight: 600; color: var(--cinza-claro); }
+  .card-nome { font-size: 17px; font-weight: 800; color: var(--navy); display: flex; align-items: center; gap: 8px; }
+  .card-email { font-size: 12px; font-weight: 500; color: var(--cinza-texto); margin-bottom: 12px; }
+
+  .info-box { background: #f8fafb; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .info-row { display: flex; gap: 8px; margin-bottom: 7px; font-size: 12px; }
+  .info-row:last-child { margin-bottom: 0; }
+  .info-label { font-size: 10.5px; font-weight: 700; color: var(--cinza-claro); width: 130px; flex-shrink: 0; }
+  .info-valor { font-weight: 600; color: var(--navy); }
+
+  .conferir-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .conferir-btn {
+    padding: 9px 13px; border-radius: 10px;
+    border: 1.5px solid #c8dcea; background: #f4f9fd;
+    font-size: 11.5px; font-weight: 700; color: var(--azul);
+    text-decoration: none; cursor: pointer;
+  }
+  .crm-hint { font-size: 10.5px; font-weight: 600; color: var(--cinza-claro); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .copiar-btn { font-size: 10px; font-weight: 700; background: #eef2f5; border: none; border-radius: 6px; padding: 2px 8px; cursor: pointer; color: #333; }
+  .copiar-btn.copiado { background: var(--verde); color: #fff; }
+
+  .acoes-row { display: flex; gap: 10px; margin-top: 14px; }
+  .acao-btn {
+    flex: 1; height: 46px; border-radius: 12px; border: none;
+    font-size: 13px; font-weight: 800; cursor: pointer;
+  }
+  .reprovar-btn { background: #fdecea; border: 1.5px solid #ffcdd2; color: var(--vermelho); }
+  .aprovar-btn { background: var(--verde); color: #fff; }
+  .pro-teste-btn { background: #f3e5f5; border: 1.5px solid #e1bee7; color: #6a1b9a; }
+  .acoes-row-2 { display: flex; margin-top: 8px; }
+  .acao-btn:disabled { opacity: 0.55; cursor: default; }
+
+  .loading { text-align: center; padding-top: 60px; color: var(--cinza-texto); font-size: 13px; }
+
+  /* ── Abas ── */
+  .abas-row { display: flex; gap: 8px; padding: 0 16px; margin: 16px auto 0; max-width: 640px; }
+  .aba-btn {
+    flex: 1; height: 42px; border-radius: 12px; border: 1.5px solid #e0e6ec;
+    background: #fff; font-size: 12.5px; font-weight: 700; color: var(--cinza-texto);
+    cursor: pointer; position: relative;
+  }
+  .aba-btn.ativa { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .aba-badge {
+    position: absolute; top: -6px; right: -6px; background: var(--vermelho); color: #fff;
+    font-size: 10px; font-weight: 800; border-radius: 9px; min-width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
+  }
+
+  /* ── Denúncias ── */
+  .status-pill { border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 800; letter-spacing: 0.3px; }
+  .status-em_analise { background: #fff3e0; color: #c1440e; }
+  .status-procedente { background: #eaf6e6; color: var(--verde-escuro); }
+  .status-improcedente { background: #f0f2f4; color: var(--cinza-texto); }
+  .denuncia-anonimo { font-size: 12px; font-weight: 700; color: var(--cinza-texto); }
+  .denuncia-alvo { font-size: 15px; font-weight: 800; color: var(--navy); margin: 6px 0 10px; }
+  .denuncia-alvo-tag { font-size: 10px; font-weight: 800; color: var(--azul); letter-spacing: 0.5px; }
+  .denuncia-fotos { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  .denuncia-foto { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; cursor: pointer; }
+  .prof-status-tag { font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 6px; margin-left: 6px; }
+  .prof-status-reprovado { background: #fdecea; color: var(--vermelho); }
+  .prof-status-aprovado { background: #eaf6e6; color: var(--verde-escuro); }
+  .denuncia-acoes { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .denuncia-acao-btn {
+    flex: 1; min-width: 110px; height: 42px; border-radius: 10px; border: 1.5px solid #e0e6ec;
+    background: #fff; font-size: 11.5px; font-weight: 700; cursor: pointer; color: var(--navy);
+  }
+  .btn-suspender { background: #fdecea; border-color: #ffcdd2; color: var(--vermelho); }
+  .btn-procedente { background: #eaf6e6; border-color: #c8e6c9; color: var(--verde-escuro); }
+  .denuncia-acao-btn:disabled { opacity: 0.55; cursor: default; }
+
+  /* ── Modal de confirmação de reprovação ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45); align-items: center; justify-content: center;
+    padding: 24px; z-index: 10;
+  }
+  .modal-box { background: #fff; border-radius: 20px; padding: 22px; max-width: 360px; text-align: center; }
+  .modal-titulo { font-size: 15px; font-weight: 800; color: var(--navy); margin-bottom: 8px; }
+  .modal-texto { font-size: 13px; font-weight: 500; color: var(--cinza-texto); line-height: 19px; margin-bottom: 18px; }
+  .modal-btns { display: flex; gap: 10px; }
+  .modal-btn { flex: 1; height: 44px; border-radius: 12px; border: none; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+  .modal-cancelar { background: #f0f2f4; color: var(--navy); }
+  .modal-confirmar { background: var(--vermelho); color: #fff; }
+</style>
+</head>
+<body>
+
+  <!-- ═══════ TELA DE LOGIN ═══════ -->
+  <div id="tela-login">
+    <div class="login-box">
+      <div class="login-icon">🛡️</div>
+      <div class="login-titulo">ÁREA RESTRITA</div>
+      <div class="login-sub">Painel de aprovação — H.U.B. Pet</div>
+
+      <label class="login-label">EMAIL</label>
+      <input class="login-input" id="input-email" type="email" placeholder="admin@hub.com" autocomplete="username" />
+
+      <label class="login-label">SENHA</label>
+      <input class="login-input" id="input-senha" type="password" placeholder="••••••••••••" autocomplete="current-password" />
+
+      <div class="login-erro" id="login-erro" style="display:none;"></div>
+
+      <button class="login-btn" id="btn-login" onclick="fazerLogin()">ENTRAR</button>
+    </div>
+  </div>
+
+  <!-- ═══════ PAINEL ═══════ -->
+  <div id="tela-painel">
+    <div class="header">
+      <div>
+        <div class="header-titulo">🛡️ PAINEL ADMIN</div>
+        <div class="header-sub" id="header-contador">carregando...</div>
+      </div>
+      <button class="sair-btn" onclick="sair()">Sair</button>
+    </div>
+
+    <div class="abas-row">
+      <button class="aba-btn ativa" id="aba-pendentes" onclick="trocarAba('pendentes')">Cadastros pendentes</button>
+      <button class="aba-btn" id="aba-denuncias" onclick="trocarAba('denuncias')">
+        Denúncias
+        <span class="aba-badge" id="badge-denuncias" style="display:none;">0</span>
+      </button>
+    </div>
+
+    <div class="conteudo" id="lista-pendentes">
+      <div class="loading">Carregando...</div>
+    </div>
+    <div class="conteudo" id="lista-denuncias" style="display:none;">
+      <div class="loading">Carregando...</div>
+    </div>
+  </div>
+
+  <!-- ═══════ MODAL REPROVAR ═══════ -->
+  <div class="modal-overlay" id="modal-reprovar">
+    <div class="modal-box">
+      <div class="modal-titulo">Reprovar cadastro?</div>
+      <div class="modal-texto" id="modal-texto"></div>
+      <div class="modal-btns">
+        <button class="modal-btn modal-cancelar" onclick="fecharModal()">Cancelar</button>
+        <button class="modal-btn modal-confirmar" id="modal-confirmar-btn">Reprovar</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ✅ Troca aqui se o endereço do backend mudar algum dia
+  const API_URL = 'https://hub-pet-backend-production.up.railway.app';
+
+  const ROTULO_TIPO = {
+    veterinario: { label: 'VETERINÁRIO', emoji: '🩺' },
+    clinica:     { label: 'CLÍNICA',      emoji: '🏥' },
+    petshop:     { label: 'PETSHOP',      emoji: '🛁' },
+    servico:     { label: 'PRESTADOR',    emoji: '🧰' },
+    farmacia:    { label: 'FARMÁCIA',     emoji: '💊' },
+  };
+
+  let pendentesAtual = [];
+  let itemParaReprovar = null;
+
+  function getToken() { return localStorage.getItem('hub_admin_token'); }
+  function setToken(t) { localStorage.setItem('hub_admin_token', t); }
+  function limparToken() { localStorage.removeItem('hub_admin_token'); }
+
+  async function fazerLogin() {
+    const email = document.getElementById('input-email').value.trim();
+    const senha = document.getElementById('input-senha').value;
+    const erroEl = document.getElementById('login-erro');
+    const btn = document.getElementById('btn-login');
+    erroEl.style.display = 'none';
+
+    if (!email || !senha) {
+      erroEl.textContent = 'Preencha e-mail e senha.';
+      erroEl.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'ENTRANDO...';
+    try {
+      const r = await fetch(`${API_URL}/auth/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, senha }),
+      });
+      const data = await r.json();
+      if (data.erro) {
+        erroEl.textContent = data.erro;
+        erroEl.style.display = 'block';
+        return;
+      }
+      setToken(data.token);
+      mostrarPainel();
+    } catch (e) {
+      erroEl.textContent = 'Erro ao conectar com o servidor.';
+      erroEl.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'ENTRAR';
+    }
+  }
+
+  function sair() {
+    limparToken();
+    document.getElementById('tela-painel').style.display = 'none';
+    document.getElementById('tela-login').style.display = 'flex';
+  }
+
+  function mostrarPainel() {
+    document.getElementById('tela-login').style.display = 'none';
+    document.getElementById('tela-painel').style.display = 'block';
+    carregarPendentes();
+    // Pré-carrega em segundo plano só pra popular o badge da aba —
+    // não troca de aba nem re-renderiza a lista até o admin clicar.
+    (async () => {
+      try {
+        const token = getToken();
+        const r = await fetch(`${API_URL}/denuncias/admin`, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await r.json();
+        if (Array.isArray(data)) { denunciasAtual = data; atualizarBadgeDenuncias(); }
+      } catch (e) {}
+    })();
+  }
+
+  async function carregarPendentes() {
+    const token = getToken();
+    if (!token) { sair(); return; }
+    try {
+      const r = await fetch(`${API_URL}/auth/admin/pendentes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { limparToken(); sair(); return; }
+      pendentesAtual = Array.isArray(data) ? data : [];
+      renderizarLista();
+    } catch (e) {
+      document.getElementById('lista-pendentes').innerHTML =
+        '<div class="loading">Erro ao carregar. Recarregue a página.</div>';
+    }
+  }
+
+  function renderizarLista() {
+    const container = document.getElementById('lista-pendentes');
+    const contador = document.getElementById('header-contador');
+    contador.textContent = `${pendentesAtual.length} cadastro${pendentesAtual.length !== 1 ? 's' : ''} pendente${pendentesAtual.length !== 1 ? 's' : ''}`;
+
+    if (pendentesAtual.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">✅</div>
+          <div class="empty-titulo">Tudo em dia!</div>
+          <div class="empty-texto">Nenhum cadastro aguardando aprovação.</div>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = pendentesAtual.map(item => cardHTML(item)).join('');
+  }
+
+  function cardHTML(item) {
+    const tipo = ROTULO_TIPO[item.tipo_conta] || { label: (item.tipo_conta || '—').toUpperCase(), emoji: '❔' };
+    const dataFmt = new Date(item.criado_em).toLocaleDateString('pt-BR');
+
+    let conferirBtns = '';
+    if (item.crm && item.tipo_conta === 'farmacia') {
+      conferirBtns += `<a class="conferir-btn" href="https://site.cff.org.br/farmaceutico/pesquisa" target="_blank">🔍 Conferir CRF</a>`;
+    }
+    if (item.crm && item.tipo_conta !== 'farmacia') {
+      conferirBtns += `<a class="conferir-btn" href="https://app.cfmv.gov.br/paginas/busca" target="_blank">🔍 Conferir CRMV</a>`;
+    }
+    if (item.cnpj) {
+      conferirBtns += `<a class="conferir-btn" href="https://solucoes.receita.fazenda.gov.br/Servicos/cnpjreva/Cnpjreva_Solicitacao.asp?cnpj=${item.cnpj}" target="_blank">🔍 Conferir CNPJ</a>`;
+    }
+    if (item.endereco) {
+      const q = encodeURIComponent(`${item.endereco}, ${item.cidade || ''}`);
+      conferirBtns += `<a class="conferir-btn" href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank">📍 Ver no mapa</a>`;
+    }
+
+    return `
+      <div class="card" id="card-${item.id}">
+        <div class="card-header">
+          <div class="tipo-tag">${tipo.emoji} ${tipo.label}</div>
+          <div class="data-text">${dataFmt}</div>
+        </div>
+        <div class="card-nome"><span>${escapeHtml(item.nome)}</span><button class="copiar-btn" onclick="copiarTexto(this, '${escapeHtml(item.nome).replace(/'/g, "\\'")}')">📋 Nome</button></div>
+        <div class="card-email">${escapeHtml(item.email)}</div>
+
+        <div class="info-box">
+          ${item.especialidade ? `<div class="info-row"><div class="info-label">Especialidade/Serviços</div><div class="info-valor">${escapeHtml(item.especialidade)}</div></div>` : ''}
+          ${item.telefone ? `<div class="info-row"><div class="info-label">Telefone</div><div class="info-valor">${escapeHtml(item.telefone)}</div></div>` : ''}
+          ${item.endereco ? `<div class="info-row"><div class="info-label">Endereço</div><div class="info-valor">${escapeHtml(item.endereco)} — ${escapeHtml(item.cidade || '')}</div></div>` : ''}
+        </div>
+
+        <div class="conferir-row">${conferirBtns}</div>
+
+        ${item.crm ? `<div class="crm-hint"><span>${item.tipo_conta === 'farmacia' ? 'CRF' : 'CRMV'} informado: ${escapeHtml(item.crm)}</span><button class="copiar-btn" onclick="copiarTexto(this, '${escapeHtml(item.crm).replace(/'/g, "\\'")}')">📋 Copiar</button></div>` : ''}
+        ${item.cnpj ? `<div class="crm-hint">CNPJ informado: ${escapeHtml(item.cnpj)}</div>` : ''}
+        ${item.cpf ? `<div class="crm-hint">CPF informado: ${escapeHtml(item.cpf)} (sem consulta pública direta — confira identidade por outro meio)</div>` : ''}
+
+        <div class="acoes-row">
+          <button class="acao-btn reprovar-btn" id="reprovar-${item.id}" onclick="abrirModalReprovar(${item.id})">✕ Reprovar</button>
+          <button class="acao-btn aprovar-btn" id="aprovar-${item.id}" onclick="aprovar(${item.id})">✓ Aprovar</button>
+        </div>
+        <div class="acoes-row-2">
+          <button class="acao-btn pro-teste-btn" id="pro-teste-${item.id}" onclick="ativarProTeste(${item.id})">🧪 Ativar Pro (teste, sem cobrança)</button>
+        </div>
+      </div>`;
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  // ✅ NOVO: copia o CRM/nome pra área de transferência com 1 clique —
+  // antes o admin tinha que selecionar o texto manualmente antes de
+  // colar na busca do CFMV/CFF.
+  async function copiarTexto(botao, texto) {
+    try {
+      await navigator.clipboard.writeText(texto);
+      const original = botao.textContent;
+      botao.textContent = '✓ Copiado';
+      botao.classList.add('copiado');
+      setTimeout(() => { botao.textContent = original; botao.classList.remove('copiado'); }, 1500);
+    } catch (e) {
+      alert('Não foi possível copiar automaticamente. Selecione o texto manualmente.');
+    }
+  }
+
+  async function aprovar(id) {
+    const item = pendentesAtual.find(p => p.id === id);
+    if (!item) return;
+    const btnAprovar = document.getElementById(`aprovar-${id}`);
+    const btnReprovar = document.getElementById(`reprovar-${id}`);
+    btnAprovar.disabled = true; btnReprovar.disabled = true;
+    btnAprovar.textContent = '...';
+    try {
+      const token = getToken();
+      const r = await fetch(`${API_URL}/auth/admin/aprovar/${id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { alert(data.erro); btnAprovar.disabled = false; btnReprovar.disabled = false; btnAprovar.textContent = '✓ Aprovar'; return; }
+      pendentesAtual = pendentesAtual.filter(p => p.id !== id);
+      renderizarLista();
+      alert(`✅ ${item.nome} já pode fazer login.`);
+    } catch (e) {
+      alert('Não foi possível aprovar.');
+      btnAprovar.disabled = false; btnReprovar.disabled = false; btnAprovar.textContent = '✓ Aprovar';
+    }
+  }
+
+  // ✅ NOVO: ativa Pro sem cobrança, só pra testes — usado enquanto a
+  // integração de pagamento real não está pronta. Não remove o card
+  // da lista (diferente de aprovar/reprovar), pra o admin poder clicar
+  // em "Aprovar" e "Ativar Pro" na ordem que preferir, sem perder o
+  // acesso ao botão se aprovar primeiro.
+  async function ativarProTeste(id) {
+    const btn = document.getElementById(`pro-teste-${id}`);
+    btn.disabled = true;
+    const textoOriginal = btn.textContent;
+    btn.textContent = '...';
+    try {
+      const token = getToken();
+      const r = await fetch(`${API_URL}/auth/admin/ativar-pro/${id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { alert(data.erro); btn.textContent = textoOriginal; btn.disabled = false; return; }
+      btn.textContent = '✅ Pro ativado';
+    } catch (e) {
+      alert('Não foi possível ativar o Pro.');
+      btn.textContent = textoOriginal;
+      btn.disabled = false;
+    }
+  }
+
+  function abrirModalReprovar(id) {
+    const item = pendentesAtual.find(p => p.id === id);
+    if (!item) return;
+    itemParaReprovar = item;
+    document.getElementById('modal-texto').textContent =
+      `${item.nome} não poderá fazer login. Essa ação pode ser revertida depois, se necessário.`;
+    document.getElementById('modal-reprovar').style.display = 'flex';
+    document.getElementById('modal-confirmar-btn').onclick = confirmarReprovar;
+  }
+
+  function fecharModal() {
+    document.getElementById('modal-reprovar').style.display = 'none';
+    itemParaReprovar = null;
+  }
+
+  async function confirmarReprovar() {
+    if (!itemParaReprovar) return;
+    const id = itemParaReprovar.id;
+    fecharModal();
+    try {
+      const token = getToken();
+      const r = await fetch(`${API_URL}/auth/admin/reprovar/${id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { alert(data.erro); return; }
+      pendentesAtual = pendentesAtual.filter(p => p.id !== id);
+      renderizarLista();
+    } catch (e) {
+      alert('Não foi possível reprovar.');
+    }
+  }
+
+  // ═══════════════════════ DENÚNCIAS ═══════════════════════
+  let denunciasAtual = [];
+  let acaoPendenteConfirmar = null; // { titulo, texto, executar }
+
+  function trocarAba(aba) {
+    document.getElementById('aba-pendentes').classList.toggle('ativa', aba === 'pendentes');
+    document.getElementById('aba-denuncias').classList.toggle('ativa', aba === 'denuncias');
+    document.getElementById('lista-pendentes').style.display = aba === 'pendentes' ? 'block' : 'none';
+    document.getElementById('lista-denuncias').style.display = aba === 'denuncias' ? 'block' : 'none';
+    if (aba === 'denuncias') carregarDenuncias();
+  }
+
+  async function carregarDenuncias() {
+    const token = getToken();
+    if (!token) { sair(); return; }
+    try {
+      const r = await fetch(`${API_URL}/denuncias/admin`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { limparToken(); sair(); return; }
+      denunciasAtual = Array.isArray(data) ? data : [];
+      renderizarListaDenuncias();
+      atualizarBadgeDenuncias();
+    } catch (e) {
+      document.getElementById('lista-denuncias').innerHTML =
+        '<div class="loading">Erro ao carregar. Recarregue a página.</div>';
+    }
+  }
+
+  function atualizarBadgeDenuncias() {
+    const emAnalise = denunciasAtual.filter(d => d.status === 'em_analise').length;
+    const badge = document.getElementById('badge-denuncias');
+    if (emAnalise > 0) { badge.textContent = emAnalise; badge.style.display = 'flex'; }
+    else { badge.style.display = 'none'; }
+  }
+
+  function renderizarListaDenuncias() {
+    const container = document.getElementById('lista-denuncias');
+    if (denunciasAtual.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🐾</div>
+          <div class="empty-titulo">Nenhuma denúncia</div>
+          <div class="empty-texto">Nada registrado até agora.</div>
+        </div>`;
+      return;
+    }
+    container.innerHTML = denunciasAtual.map(d => cardDenunciaHTML(d)).join('');
+  }
+
+  const STATUS_LABEL = { em_analise: 'EM ANÁLISE', procedente: 'PROCEDENTE', improcedente: 'IMPROCEDENTE' };
+
+  function cardDenunciaHTML(d) {
+    const dataFmt = new Date(d.criado_em).toLocaleDateString('pt-BR');
+    const denunciante = d.manter_anonimo
+      ? '🔒 Denunciante anônimo'
+      : `${escapeHtml(d.denunciante_nome || '—')} · ${escapeHtml(d.denunciante_email || '')}`;
+
+    let alvoHTML = '';
+    if (d.profissional_id) {
+      const profTag = d.profissional_status === 'reprovado'
+        ? '<span class="prof-status-tag prof-status-reprovado">SUSPENSO</span>'
+        : '<span class="prof-status-tag prof-status-aprovado">ATIVO</span>';
+      alvoHTML = `<div class="denuncia-alvo-tag">PROFISSIONAL CADASTRADO NO APP</div>
+        <div class="denuncia-alvo">${escapeHtml(d.profissional_nome || '—')} ${profTag}</div>`;
+    } else {
+      alvoHTML = `<div class="denuncia-alvo-tag">DENÚNCIA LIVRE (fora do app)</div>
+        <div class="denuncia-alvo">${escapeHtml(d.nome_livre || '—')}</div>`;
+    }
+
+    const fotosHTML = (d.fotos && d.fotos.length > 0)
+      ? `<div class="denuncia-fotos">${d.fotos.map(f => `<img class="denuncia-foto" src="${f}" onclick="window.open('${f}','_blank')" />`).join('')}</div>`
+      : '';
+
+    const podeSuspender = d.profissional_id && d.profissional_status !== 'reprovado';
+
+    return `
+      <div class="card" id="denuncia-${d.id}">
+        <div class="card-header">
+          <span class="status-pill status-${d.status}">${STATUS_LABEL[d.status] || d.status}</span>
+          <div class="data-text">${dataFmt}</div>
+        </div>
+
+        ${alvoHTML}
+
+        <div class="info-box">
+          <div class="info-row"><div class="info-label">Denunciante</div><div class="info-valor">${denunciante}</div></div>
+          ${d.local ? `<div class="info-row"><div class="info-label">Local</div><div class="info-valor">${escapeHtml(d.local)}</div></div>` : ''}
+          ${d.data_ocorrido ? `<div class="info-row"><div class="info-label">Quando</div><div class="info-valor">${escapeHtml(d.data_ocorrido)}</div></div>` : ''}
+        </div>
+
+        <div class="info-box">
+          <div class="info-row"><div class="info-label">O que aconteceu</div><div class="info-valor">${escapeHtml(d.descricao)}</div></div>
+        </div>
+
+        ${fotosHTML}
+
+        <div class="denuncia-acoes">
+          ${podeSuspender ? `<button class="denuncia-acao-btn btn-suspender" onclick="abrirModalSuspender(${d.id})">🚫 Suspender profissional</button>` : ''}
+          ${d.status !== 'procedente' ? `<button class="denuncia-acao-btn btn-procedente" onclick="marcarStatusDenuncia(${d.id}, 'procedente')">✓ Procedente</button>` : ''}
+          ${d.status !== 'improcedente' ? `<button class="denuncia-acao-btn" onclick="marcarStatusDenuncia(${d.id}, 'improcedente')">✕ Improcedente</button>` : ''}
+        </div>
+      </div>`;
+  }
+
+  async function marcarStatusDenuncia(id, status) {
+    try {
+      const token = getToken();
+      const r = await fetch(`${API_URL}/denuncias/admin/${id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status }),
+      });
+      const data = await r.json();
+      if (data.erro) { alert(data.erro); return; }
+      const item = denunciasAtual.find(d => d.id === id);
+      if (item) item.status = status;
+      renderizarListaDenuncias();
+      atualizarBadgeDenuncias();
+    } catch (e) {
+      alert('Não foi possível atualizar o status.');
+    }
+  }
+
+  function abrirModalSuspender(id) {
+    const item = denunciasAtual.find(d => d.id === id);
+    if (!item) return;
+    document.getElementById('modal-texto').textContent =
+      `${item.profissional_nome} vai ser bloqueado de fazer login no app, e a denúncia será marcada como procedente. Essa ação pode ser revertida depois, se necessário.`;
+    document.getElementById('modal-reprovar').style.display = 'flex';
+    document.getElementById('modal-confirmar-btn').onclick = () => confirmarSuspender(id);
+  }
+
+  async function confirmarSuspender(id) {
+    fecharModal();
+    try {
+      const token = getToken();
+      const r = await fetch(`${API_URL}/denuncias/admin/${id}/suspender`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.erro) { alert(data.erro); return; }
+      await carregarDenuncias();
+    } catch (e) {
+      alert('Não foi possível suspender.');
+    }
+  }
+
+  // ── Inicialização: se já tiver token salvo, pula direto pro painel ──
+  if (getToken()) {
+    mostrarPainel();
+  }
+
+  // Enter no campo de senha também tenta logar
+  document.getElementById('input-senha').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') fazerLogin();
+  });
+</script>
+
+</body>
+</html>

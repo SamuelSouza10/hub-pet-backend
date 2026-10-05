@@ -60,12 +60,32 @@ exports.buscarTagPublica = async (req, res) => {
   try {
     const { codigo } = req.params;
     const result = await pool.query(
-      `SELECT nome_perfil, foto_url, telefone_contato, alerta, ativo FROM tags_emergencia WHERE codigo = $1`,
+      `SELECT nome_perfil, foto_url, telefone_contato, alerta, ativo, perfil_id FROM tags_emergencia WHERE codigo = $1`,
       [codigo]
     );
     if (result.rows.length === 0) return res.status(404).json({ erro: 'Tag não encontrada' });
     if (!result.rows[0].ativo) return res.status(410).json({ erro: 'Essa tag foi desativada pelo tutor' });
-    res.json(result.rows[0]);
+
+    const tag = result.rows[0];
+    // ✅ NOVO: se o pet estiver marcado como perdido (mural de Pets
+    // Perdidos), a página pública da tag também mostra o aviso —
+    // quem encontra o pet e escaneia o QR code já vê isso na hora,
+    // mesmo sem saber que existe um mural separado.
+    let perdido = false;
+    if (tag.perfil_id && !isNaN(Number(tag.perfil_id))) {
+      try {
+        const check = await pool.query(
+          "SELECT id FROM pets_perdidos WHERE perfil_id = $1 AND status = 'perdido' LIMIT 1",
+          [Number(tag.perfil_id)]
+        );
+        perdido = check.rows.length > 0;
+      } catch {
+        // se a tabela pets_perdidos não existir ainda (banco não
+        // migrado), simplesmente não mostra o aviso — não quebra a tag.
+      }
+    }
+
+    res.json({ ...tag, perdido });
   } catch (err) {
     console.error('Erro buscarTagPublica:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });

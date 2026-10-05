@@ -2,15 +2,66 @@ const pool      = require('../database');
 
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
+const crypto  = require('crypto');
+const { enviarCodigoRecuperacao } = require('../utils/resendEmail');
+// ✅ NOVO: CPF e RG são dados de identificação sensíveis — mesmo
+// tratamento que já demos ao token de pagamento. Nunca ficam em
+// texto puro no banco.
+const { cifrar, decifrar } = require('../utils/cryptoUtil');
 
-const SECRET = process.env.JWT_SECRET || 'hub_super_secret_2025';
+// ✅ CORRIGIDO: tinha um valor padrão escondido no código
+// ('hub_super_secret_2025') usado quando a variável de ambiente não
+// estava configurada. Isso é gravíssimo — como esse valor fica
+// visível pra qualquer um com acesso ao código-fonte, permitiria
+// forjar um token válido pra QUALQUER conta, inclusive admin. Agora
+// o servidor recusa iniciar sem a variável real configurada, em vez
+// de cair silenciosamente num segredo previsível.
+const SECRET = process.env.JWT_SECRET;
+if (!SECRET) {
+  throw new Error(
+    'JWT_SECRET não configurado. Gere um valor forte com `node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"` ' +
+    'e configure como variável de ambiente antes de iniciar o servidor.'
+  );
+}
+
+// ✅ Compara duas strings em tempo constante — usada no login do
+// admin, que não tem hash (é comparação direta com variável de
+// ambiente). timingSafeEqual exige buffers do mesmo tamanho, por
+// isso o padEnd: sem isso, comparar strings de tamanhos diferentes
+// já lançaria erro antes de proteger nada.
+function compararSeguro(a, b) {
+  const bufA = Buffer.from(String(a || '').padEnd(256, '\0'));
+  const bufB = Buffer.from(String(b || '').padEnd(256, '\0'));
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// ✅ NOVO: registra quem aceitou os Termos de Uso / Política de
+// Privacidade, quando, e qual versão — usado em todo cadastro
+// (tutor e as 4 variantes de profissional). A LGPD exige que o
+// consentimento seja demonstrável, não só "ter mostrado a tela".
+const VERSAO_TERMOS_ATUAL = '1.0';
+// ✅ Aceita um `client` opcional — quando o cadastro roda dentro de
+// uma transação (ver registerMedico/Petshop/Clinica/Farmacia), o
+// aceite precisa ser escrito pela MESMA conexão/transação, senão um
+// ROLLBACK no restante do cadastro não desfaria o aceite já gravado
+// (ficaria um registro de consentimento "órfão", sem o usuário
+// correspondente).
+async function registrarAceiteTermos(usuario_id, req, client = pool) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+  await client.query(
+    'INSERT INTO aceites_termos (usuario_id, versao, ip) VALUES ($1, $2, $3)',
+    [usuario_id, VERSAO_TERMOS_ATUAL, ip]
+  );
+}
 
 // ── Cadastro paciente ─────────────────────────────────────────
 exports.registerPaciente = async (req, res) => {
   try {
-    const { nome, email, senha } = req.body;
+    const { nome, email, senha, aceitouTermos } = req.body;
     if (!nome || !email || !senha)
       return res.status(400).json({ erro: 'Preencha todos os campos' });
+    if (!aceitouTermos)
+      return res.status(400).json({ erro: 'É preciso aceitar os Termos de Uso e a Política de Privacidade para continuar.' });
 
     const existe = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
     if (existe.rows.length > 0)
@@ -23,6 +74,7 @@ exports.registerPaciente = async (req, res) => {
     );
 
     const usuario = result.rows[0];
+    await registrarAceiteTermos(usuario.id, req);
     const token   = jwt.sign({ id: usuario.id, tipo: 'paciente' }, SECRET, { expiresIn: '30d' });
 
     res.status(201).json({ token, nome: usuario.nome, email: usuario.email, tipo: 'paciente' });
@@ -38,25 +90,40 @@ exports.registerPaciente = async (req, res) => {
 //   ALTER TABLE medicos ADD COLUMN IF NOT EXISTS valor_consulta TEXT DEFAULT '';
 //   ALTER TABLE medicos ADD COLUMN IF NOT EXISTS tipo_conta TEXT DEFAULT 'medico';
 exports.registerMedico = async (req, res) => {
+  // ✅ CORRIGIDO: criava o usuário numa query e o perfil profissional
+  // em outra, sem transação — se a segunda falhasse por qualquer
+  // motivo (erro de rede, de validação, etc.), sobrava um usuário
+  // "fantasma": consegue existir e até logar, mas sem nenhum perfil
+  // de médico associado, quebrando qualquer tela que dependa disso.
+  // Encontrado testando o mesmo padrão no cadastro de petshop.
+  let client;
   try {
     const {
       nome, email, senha, especialidade, crm, telefone, endereco, cidade, cep,
-      bio, valor_consulta, foto_base64,
+      bio, valor_consulta, foto_base64, aceitouTermos,
     } = req.body;
     if (!nome || !email || !senha || !especialidade || !crm)
       return res.status(400).json({ erro: 'Preencha todos os campos, incluindo o CRMV' });
+    if (!aceitouTermos)
+      return res.status(400).json({ erro: 'É preciso aceitar os Termos de Uso e a Política de Privacidade para continuar.' });
 
-    const existe = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (existe.rows.length > 0)
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const existe = await client.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (existe.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ erro: 'E-mail já cadastrado' });
+    }
 
     const hash   = await bcrypt.hash(senha, 10);
-    const result = await pool.query(
+    const result = await client.query(
       'INSERT INTO usuarios (nome, email, senha, tipo) VALUES ($1, $2, $3, $4) RETURNING id, nome, email',
       [nome, email, hash, 'medico']
     );
 
     const usuario = result.rows[0];
+    await registrarAceiteTermos(usuario.id, req, client);
 
     const enderecoCompleto = endereco || '';
     const cidadeVal        = cidade   || '';
@@ -71,12 +138,14 @@ exports.registerMedico = async (req, res) => {
     // ambiente.
     const tipoContaVal      = 'veterinario';
 
-    await pool.query(
+    await client.query(
       `INSERT INTO medicos
         (usuario_id, especialidade, crm, telefone, endereco, cidade, cep, foto_url, bio, valor_consulta, tipo_conta)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [usuario.id, especialidade, crm || '', telefone || '', enderecoCompleto, cidadeVal, cepVal, fotoVal, bioVal, valorConsultaVal, tipoContaVal]
     );
+
+    await client.query('COMMIT');
 
     // ✅ NOVO: não emite token nenhum aqui — a conta nasce com
     // status_verificacao = 'pendente' (padrão da coluna) e só recebe
@@ -86,8 +155,11 @@ exports.registerMedico = async (req, res) => {
       mensagem: 'Cadastro enviado! Sua conta será analisada e você poderá fazer login assim que for aprovada.',
     });
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro registerMedico:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -102,8 +174,13 @@ exports.registerMedico = async (req, res) => {
 // futuro, só petshop poder vender produto (ração etc.) — hoje as duas
 // contas fazem exatamente a mesma coisa (oferecer serviços agendáveis).
 exports.registerPetshop = async (req, res) => {
+  // ✅ CORRIGIDO: mesma falha de integridade achada no cadastro de
+  // médico — sem transação, um erro entre criar o usuário e criar o
+  // perfil (ex: falha ao cifrar o CPF) deixava um usuário "fantasma":
+  // login existe, perfil profissional não.
+  let client;
   try {
-    const { nome, email, senha, telefone, endereco, cidade, cep, cnpj, cpf, servicos, tipo_conta, tem_entrega } = req.body;
+    const { nome, email, senha, telefone, endereco, cidade, cep, cnpj, cpf, servicos, tipo_conta, tem_entrega, aceitouTermos } = req.body;
 
     // ✅ Trava de segurança: só aceita esses dois valores, senão cai
     // sempre em 'petshop' — não deixa o app mandar qualquer string solta
@@ -116,6 +193,8 @@ exports.registerPetshop = async (req, res) => {
     // horas vagas era uma barreira sem necessidade real.
     if (!nome || !email || !senha || !Array.isArray(servicos) || servicos.length === 0)
       return res.status(400).json({ erro: 'Preencha todos os campos e selecione ao menos um serviço' });
+    if (!aceitouTermos)
+      return res.status(400).json({ erro: 'É preciso aceitar os Termos de Uso e a Política de Privacidade para continuar.' });
 
     let cnpjLimpo = '';
     let cpfLimpo  = '';
@@ -129,17 +208,23 @@ exports.registerPetshop = async (req, res) => {
         return res.status(400).json({ erro: 'CPF inválido — deve ter 11 dígitos' });
     }
 
-    const existe = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (existe.rows.length > 0)
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const existe = await client.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (existe.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ erro: 'E-mail já cadastrado' });
+    }
 
     const hash   = await bcrypt.hash(senha, 10);
-    const result = await pool.query(
+    const result = await client.query(
       'INSERT INTO usuarios (nome, email, senha, tipo) VALUES ($1, $2, $3, $4) RETURNING id, nome, email',
       [nome, email, hash, 'medico']
     );
 
     const usuario = result.rows[0];
+    await registrarAceiteTermos(usuario.id, req, client);
 
     // Traduz os ids de serviço pra rótulos legíveis (igual mostrado no app)
     const ROTULOS_SERVICO = {
@@ -154,12 +239,19 @@ exports.registerPetshop = async (req, res) => {
     };
     const servicosTexto = servicos.map(s => ROTULOS_SERVICO[s] || s).join(', ');
 
-    await pool.query(
+    // ✅ A cifragem do CPF roda ANTES do INSERT, ainda dentro do try —
+    // se falhar (chave ausente, etc.), cai no catch e dá ROLLBACK,
+    // sem deixar o usuário já criado pela metade.
+    const cpfCifrado = cifrar(cpfLimpo) || '';
+
+    await client.query(
       `INSERT INTO medicos
         (usuario_id, especialidade, crm, telefone, endereco, cidade, cep, foto_url, bio, valor_consulta, tipo_conta, cnpj, cpf, tem_entrega)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [usuario.id, servicosTexto, '', telefone || '', endereco || '', cidade || '', cep || '', '', '', '', tipoContaVal, cnpjLimpo, cpfLimpo, !!tem_entrega]
+      [usuario.id, servicosTexto, '', telefone || '', endereco || '', cidade || '', cep || '', '', '', '', tipoContaVal, cnpjLimpo, cpfCifrado, !!tem_entrega]
     );
+
+    await client.query('COMMIT');
 
     // ✅ NOVO: não emite token — nasce pendente, precisa de aprovação.
     res.status(201).json({
@@ -167,8 +259,11 @@ exports.registerPetshop = async (req, res) => {
       mensagem: 'Cadastro enviado! Sua conta será analisada e você poderá fazer login assim que for aprovada.',
     });
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro registerPetshop:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -181,22 +276,34 @@ exports.registerPetshop = async (req, res) => {
 // — assim a busca por texto que já existe encontra a clínica tanto
 // procurando "Cardiologista" quanto "Raio-X", sem precisar de coluna nova.
 exports.registerClinica = async (req, res) => {
+  // ✅ CORRIGIDO: mesma falha de integridade dos outros cadastros —
+  // sem transação, um erro entre os dois INSERTs deixava um usuário
+  // sem perfil profissional associado.
+  let client;
   try {
-    const { nome, email, senha, telefone, endereco, cidade, cep, crm, especialidades, exames } = req.body;
+    const { nome, email, senha, telefone, endereco, cidade, cep, crm, especialidades, exames, aceitouTermos } = req.body;
     if (!nome || !email || !senha || !crm || !Array.isArray(especialidades) || especialidades.length === 0)
       return res.status(400).json({ erro: 'Preencha todos os campos, incluindo o CRMV, e selecione ao menos uma especialidade' });
+    if (!aceitouTermos)
+      return res.status(400).json({ erro: 'É preciso aceitar os Termos de Uso e a Política de Privacidade para continuar.' });
 
-    const existe = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (existe.rows.length > 0)
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const existe = await client.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (existe.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ erro: 'E-mail já cadastrado' });
+    }
 
     const hash   = await bcrypt.hash(senha, 10);
-    const result = await pool.query(
+    const result = await client.query(
       'INSERT INTO usuarios (nome, email, senha, tipo) VALUES ($1, $2, $3, $4) RETURNING id, nome, email',
       [nome, email, hash, 'medico']
     );
 
     const usuario = result.rows[0];
+    await registrarAceiteTermos(usuario.id, req, client);
 
     const ROTULOS_EXAME = {
       raiox: 'Raio-X', ultrassom: 'Ultrassonografia', ecg: 'Eletrocardiograma',
@@ -214,12 +321,14 @@ exports.registerClinica = async (req, res) => {
     // da clínica, sem depender de re-interpretar o texto combinado.
     const examesTextoSeparado = examesTexto.join(', ');
 
-    await pool.query(
+    await client.query(
       `INSERT INTO medicos
         (usuario_id, especialidade, crm, telefone, endereco, cidade, cep, foto_url, bio, valor_consulta, tipo_conta, exames_procedimentos)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [usuario.id, especialidadeTexto, crm, telefone || '', endereco || '', cidade || '', cep || '', '', '', '', 'clinica', examesTextoSeparado]
     );
+
+    await client.query('COMMIT');
 
     // ✅ NOVO: não emite token — nasce pendente, precisa de aprovação.
     res.status(201).json({
@@ -227,8 +336,11 @@ exports.registerClinica = async (req, res) => {
       mensagem: 'Cadastro enviado! Sua conta será analisada e você poderá fazer login assim que for aprovada.',
     });
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro registerClinica:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -244,9 +356,32 @@ exports.login = async (req, res) => {
       return res.status(401).json({ erro: 'E-mail ou senha incorretos' });
 
     const usuario = result.rows[0];
+
+    // ✅ NOVO: bloqueio temporário depois de tentativas erradas
+    // seguidas — sem isso, bcrypt sozinho só atrasa cada tentativa
+    // individual, não impede um ataque automatizado de testar
+    // milhares de senhas.
+    if (usuario.bloqueado_login_ate && new Date(usuario.bloqueado_login_ate) > new Date()) {
+      const minutosRestantes = Math.ceil((new Date(usuario.bloqueado_login_ate) - new Date()) / 60000);
+      return res.status(429).json({ erro: `Muitas tentativas erradas. Tente de novo em ${minutosRestantes} minuto(s).` });
+    }
+
     const senhaOk = await bcrypt.compare(senha, usuario.senha);
-    if (!senhaOk)
+    if (!senhaOk) {
+      const novasTentativas = (usuario.tentativas_login_falhas || 0) + 1;
+      // 5 tentativas erradas -> bloqueia por 15 minutos.
+      const bloqueadoAte = novasTentativas >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+      await pool.query(
+        'UPDATE usuarios SET tentativas_login_falhas = $1, bloqueado_login_ate = $2 WHERE id = $3',
+        [novasTentativas, bloqueadoAte, usuario.id]
+      );
       return res.status(401).json({ erro: 'E-mail ou senha incorretos' });
+    }
+
+    // Login certo — zera o contador de tentativas falhas.
+    if (usuario.tentativas_login_falhas > 0 || usuario.bloqueado_login_ate) {
+      await pool.query('UPDATE usuarios SET tentativas_login_falhas = 0, bloqueado_login_ate = NULL WHERE id = $1', [usuario.id]);
+    }
 
     // ✅ NOVO: bloqueia login de conta profissional ainda não aprovada
     // por um admin. Consulta e emite o token só DEPOIS de confirmar que
@@ -348,6 +483,66 @@ exports.podeExcluirConta = async (req, res) => {
   }
 };
 
+// ✅ NOVO: exportação dos próprios dados (LGPD Art. 18, V — direito
+// de portabilidade). Reúne os dados principais da conta num JSON que
+// a pessoa pode baixar ou levar pra outro lugar.
+exports.exportarDados = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+
+    const usuarioResult = await pool.query(
+      'SELECT nome, email, telefone, cpf, rg, endereco, data_nascimento, tipo, criado_em FROM usuarios WHERE id = $1',
+      [usuario_id]
+    );
+    if (usuarioResult.rows.length === 0) return res.status(404).json({ erro: 'Usuário não encontrado' });
+    const dados = usuarioResult.rows[0];
+    try {
+      if (dados.cpf) dados.cpf = decifrar(dados.cpf);
+      if (dados.rg) dados.rg = decifrar(dados.rg);
+    } catch (e) {
+      console.error('Falha ao decifrar CPF/RG na exportação, usuário', usuario_id, ':', e.message);
+    }
+
+    const exportacao = { dados_da_conta: dados };
+
+    // Se for profissional, inclui os dados profissionais também.
+    const medicoResult = await pool.query(
+      'SELECT especialidade, crm, cnpj, cpf, telefone, endereco, cidade, cep, bio, tipo_conta FROM medicos WHERE usuario_id = $1',
+      [usuario_id]
+    );
+    if (medicoResult.rows.length > 0) {
+      const perfilProfissional = medicoResult.rows[0];
+      try {
+        if (perfilProfissional.cpf) perfilProfissional.cpf = decifrar(perfilProfissional.cpf);
+      } catch (e) {
+        console.error('Falha ao decifrar CPF profissional na exportação, usuário', usuario_id, ':', e.message);
+      }
+      exportacao.perfil_profissional = perfilProfissional;
+    }
+
+    // Pets cadastrados, se for tutor.
+    const petsResult = await pool.query(
+      'SELECT nome, especie, raca FROM perfis_pet WHERE tutor_id = $1',
+      [usuario_id]
+    );
+    if (petsResult.rows.length > 0) exportacao.pets = petsResult.rows;
+
+    // Histórico de consultas (resumo).
+    const consultasResult = await pool.query(
+      `SELECT data, horario, especialidade, status, criado_em FROM consultas
+       WHERE paciente_id = $1 OR medico_id = $1 ORDER BY criado_em DESC LIMIT 200`,
+      [usuario_id]
+    );
+    if (consultasResult.rows.length > 0) exportacao.consultas = consultasResult.rows;
+
+    res.setHeader('Content-Disposition', 'attachment; filename="meus-dados-hubpet.json"');
+    res.json(exportacao);
+  } catch (err) {
+    console.error('Erro exportarDados:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
 exports.excluirConta = async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
@@ -445,7 +640,10 @@ exports.buscarMeuPerfilProfissional = async (req, res) => {
       // ✅ NOVO: vagas_simultaneas — usado pra popular o campo
       // editável de capacidade paralela em configuracoesprofissional.tsx.
       // ✅ NOVO: bio também — visível pro tutor no perfil público.
-      'SELECT tipo_conta, tem_entrega, atendimento_domiciliar, telemedicina, intervalo_lembrete_dias, especialidade, exames_procedimentos, telefone, endereco, cidade, cep, foto_url, vagas_simultaneas, bio FROM medicos WHERE usuario_id = $1',
+      // ✅ CORRIGIDO: faltava o próprio id — sem ele, telas como
+      // gestaodeagenda.pet.tsx não tinham como buscar a config de
+      // agenda pelo backend (que precisa do ID do médico).
+      'SELECT usuario_id AS id, tipo_conta, tem_entrega, atendimento_domiciliar, telemedicina, intervalo_lembrete_dias, especialidade, exames_procedimentos, telefone, endereco, cidade, cep, foto_url, vagas_simultaneas, bio FROM medicos WHERE usuario_id = $1',
       [usuario_id]
     );
     if (result.rows.length === 0)
@@ -549,7 +747,16 @@ exports.removerFundoCarimbo = async (req, res) => {
     const { image_base64 } = req.body;
     if (!image_base64) return res.status(400).json({ erro: 'Imagem não fornecida' });
 
-    const REMOVE_BG_KEY = process.env.REMOVE_BG_KEY || 'nP4bEHkzi28czJ6J5xMK81ZM';
+    // ✅ CORRIGIDO: tinha uma chave de API real do remove.bg escondida
+    // no código como valor padrão. Diferente do JWT_SECRET (crítico
+    // pra autenticação de todo mundo), essa é só uma funcionalidade
+    // específica — não faz sentido o servidor inteiro recusar iniciar
+    // por causa dela, mas a chave não pode continuar exposta no
+    // código-fonte (vazamento = qualquer um gasta a cota paga dela).
+    const REMOVE_BG_KEY = process.env.REMOVE_BG_KEY;
+    if (!REMOVE_BG_KEY) {
+      return res.status(500).json({ erro: 'Remoção de fundo não configurada no servidor.' });
+    }
 
     const response = await fetch('https://api.remove.bg/v1.0/removebg', {
       method: 'POST',
@@ -656,39 +863,100 @@ exports.alterarSenha = async (req, res) => {
 };
 
 // ── Verificar se um e-mail já existe (sem efeito colateral) ───
-exports.verificarEmail = async (req, res) => {
-  try {
-    const { email } = req.query;
-    if (!email) return res.status(400).json({ erro: 'Informe o e-mail.' });
+// ═══════════════════════════════════════════════════════════════
+// ✅ CORRIGIDO: o fluxo antigo trocava a senha de QUALQUER conta só
+// sabendo o e-mail dela — sem confirmar posse nenhuma. Qualquer
+// pessoa que soubesse o e-mail de alguém conseguia tomar a conta,
+// sem precisar de acesso à caixa de entrada. Agora exige um código
+// de 6 dígitos enviado por e-mail de verdade, válido por 15 minutos,
+// com limite de tentativas.
+// ═══════════════════════════════════════════════════════════════
 
-    const result = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    res.json({ existe: result.rows.length > 0 });
+// ── 1) Tutor/profissional pede o código ───────────────────────
+exports.solicitarCodigoRecuperacao = async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ erro: 'Informe o e-mail.' });
+
+  // ✅ Resposta SEMPRE igual, exista o e-mail ou não — evita que
+  // alguém descubra quais e-mails têm conta no app testando aqui
+  // ("enumeração de usuário").
+  const respostaGenerica = { mensagem: 'Se esse e-mail tiver uma conta, enviamos um código pra ele.' };
+
+  try {
+    const usuarioResult = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (usuarioResult.rows.length === 0) return res.json(respostaGenerica);
+    const usuario_id = usuarioResult.rows[0].id;
+
+    // ✅ Evita spam: não gera um código novo se já tem um válido de
+    // menos de 60 segundos atrás (evita lotar a caixa de entrada e
+    // gastar a cota do Resend numa rajada de cliques).
+    const recente = await pool.query(
+      `SELECT id FROM codigos_recuperacao WHERE usuario_id = $1 AND criado_em > NOW() - INTERVAL '60 seconds' LIMIT 1`,
+      [usuario_id]
+    );
+    if (recente.rows.length > 0) return res.json(respostaGenerica);
+
+    const codigo = String(crypto.randomInt(100000, 999999)); // 6 dígitos
+    const codigoHash = await bcrypt.hash(codigo, 10);
+    const expiraEm = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
+
+    await pool.query(
+      `INSERT INTO codigos_recuperacao (usuario_id, codigo_hash, expira_em) VALUES ($1, $2, $3)`,
+      [usuario_id, codigoHash, expiraEm]
+    );
+
+    await enviarCodigoRecuperacao(email, codigo);
+    res.json(respostaGenerica);
   } catch (err) {
-    console.error('Erro verificarEmail:', err.message);
+    console.error('Erro solicitarCodigoRecuperacao:', err.message);
     res.status(500).json({ erro: 'Erro interno.' });
   }
 };
 
-// ── Recuperar senha (sem email — verifica email e troca senha) ─
-exports.recuperarSenha = async (req, res) => {
-  const { email, novaSenha } = req.body;
-
-  if (!email || !novaSenha)
-    return res.status(400).json({ erro: 'Informe o e-mail e a nova senha.' });
+// ── 2) Confirma o código e troca a senha ──────────────────────
+exports.confirmarCodigoRecuperacao = async (req, res) => {
+  const { email, codigo, novaSenha } = req.body;
+  if (!email || !codigo || !novaSenha)
+    return res.status(400).json({ erro: 'Informe o e-mail, o código e a nova senha.' });
   if (novaSenha.length < 6)
     return res.status(400).json({ erro: 'A senha deve ter pelo menos 6 caracteres.' });
 
   try {
-    const result = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (result.rows.length === 0)
-      return res.status(404).json({ erro: 'E-mail nao encontrado. Verifique e tente novamente.' });
+    const usuarioResult = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (usuarioResult.rows.length === 0) return res.status(400).json({ erro: 'Código inválido ou expirado.' });
+    const usuario_id = usuarioResult.rows[0].id;
+
+    const codigoResult = await pool.query(
+      `SELECT id, codigo_hash, tentativas FROM codigos_recuperacao
+       WHERE usuario_id = $1 AND usado = false AND expira_em > NOW()
+       ORDER BY criado_em DESC LIMIT 1`,
+      [usuario_id]
+    );
+    if (codigoResult.rows.length === 0) return res.status(400).json({ erro: 'Código inválido ou expirado.' });
+    const linha = codigoResult.rows[0];
+
+    // ✅ Depois de 5 tentativas erradas, invalida o código — força
+    // pedir um novo em vez de deixar tentar pra sempre (o código
+    // tem só 6 dígitos, 1 milhão de combinações, então sem esse
+    // limite daria pra tentar força bruta).
+    if (linha.tentativas >= 5) {
+      await pool.query('UPDATE codigos_recuperacao SET usado = true WHERE id = $1', [linha.id]);
+      return res.status(400).json({ erro: 'Muitas tentativas. Peça um novo código.' });
+    }
+
+    const codigoOk = await bcrypt.compare(codigo, linha.codigo_hash);
+    if (!codigoOk) {
+      await pool.query('UPDATE codigos_recuperacao SET tentativas = tentativas + 1 WHERE id = $1', [linha.id]);
+      return res.status(400).json({ erro: 'Código inválido ou expirado.' });
+    }
 
     const hash = await bcrypt.hash(novaSenha, 10);
-    await pool.query('UPDATE usuarios SET senha = $1 WHERE email = $2', [hash, email]);
+    await pool.query('UPDATE usuarios SET senha = $1 WHERE id = $2', [hash, usuario_id]);
+    await pool.query('UPDATE codigos_recuperacao SET usado = true WHERE id = $1', [linha.id]);
 
     res.json({ mensagem: 'Senha alterada com sucesso!' });
-  } catch (e) {
-    console.error('Erro recuperarSenha:', e.message);
+  } catch (err) {
+    console.error('Erro confirmarCodigoRecuperacao:', err.message);
     res.status(500).json({ erro: 'Erro interno.' });
   }
 };
@@ -699,22 +967,34 @@ exports.recuperarSenha = async (req, res) => {
 // Escopo deliberadamente limitado — não trata substância de controle
 // especial (foge do escopo de solicitação simples que esse app oferece).
 exports.registerFarmacia = async (req, res) => {
+  // ✅ CORRIGIDO: mesma falha de integridade dos outros cadastros —
+  // sem transação, um erro entre os dois INSERTs deixava um usuário
+  // sem perfil profissional associado.
+  let client;
   try {
-    const { nome, email, senha, telefone, endereco, cidade, cep, crf, categorias, tem_entrega } = req.body;
+    const { nome, email, senha, telefone, endereco, cidade, cep, crf, categorias, tem_entrega, aceitouTermos } = req.body;
     if (!nome || !email || !senha || !crf || !Array.isArray(categorias) || categorias.length === 0)
       return res.status(400).json({ erro: 'Preencha todos os campos, incluindo o CRF, e selecione ao menos uma categoria' });
+    if (!aceitouTermos)
+      return res.status(400).json({ erro: 'É preciso aceitar os Termos de Uso e a Política de Privacidade para continuar.' });
 
-    const existe = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (existe.rows.length > 0)
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const existe = await client.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+    if (existe.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ erro: 'E-mail já cadastrado' });
+    }
 
     const hash   = await bcrypt.hash(senha, 10);
-    const result = await pool.query(
+    const result = await client.query(
       'INSERT INTO usuarios (nome, email, senha, tipo) VALUES ($1, $2, $3, $4) RETURNING id, nome, email',
       [nome, email, hash, 'medico']
     );
 
     const usuario = result.rows[0];
+    await registrarAceiteTermos(usuario.id, req, client);
 
     const ROTULOS_CATEGORIA = {
       palatavel: 'Palatáveis (sabor)', dose: 'Dose customizada',
@@ -725,12 +1005,14 @@ exports.registerFarmacia = async (req, res) => {
     };
     const categoriasTexto = categorias.map(c => ROTULOS_CATEGORIA[c] || c).join(', ');
 
-    await pool.query(
+    await client.query(
       `INSERT INTO medicos
         (usuario_id, especialidade, crm, telefone, endereco, cidade, cep, foto_url, bio, valor_consulta, tipo_conta, tem_entrega)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [usuario.id, categoriasTexto, crf, telefone || '', endereco || '', cidade || '', cep || '', '', '', '', 'farmacia', !!tem_entrega]
     );
+
+    await client.query('COMMIT');
 
     // ✅ Não emite token — nasce pendente, precisa de aprovação.
     res.status(201).json({
@@ -738,8 +1020,11 @@ exports.registerFarmacia = async (req, res) => {
       mensagem: 'Cadastro enviado! Sua conta será analisada e você poderá fazer login assim que for aprovada.',
     });
   } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('Erro registerFarmacia:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -766,7 +1051,13 @@ exports.adminLogin = async (req, res) => {
       return res.status(500).json({ erro: 'Login de admin não configurado no servidor.' });
     }
 
-    if (email !== ADMIN_EMAIL || senha !== ADMIN_SENHA)
+    // ✅ CORRIGIDO: comparação direta com !== vaza informação pelo
+    // tempo de resposta (string curta falha mais rápido que uma
+    // quase certa) — timingSafeEqual sempre leva o mesmo tempo,
+    // exigindo strings do mesmo tamanho (por isso o padStart).
+    const emailOk = compararSeguro(email, ADMIN_EMAIL);
+    const senhaOk = compararSeguro(senha, ADMIN_SENHA);
+    if (!emailOk || !senhaOk)
       return res.status(401).json({ erro: 'E-mail ou senha incorretos' });
 
     const token = jwt.sign({ tipo: 'admin' }, SECRET, { expiresIn: '12h' });
@@ -790,7 +1081,18 @@ exports.listarPendentes = async (req, res) => {
       WHERE m.status_verificacao = 'pendente'
       ORDER BY u.criado_em ASC
     `);
-    res.json(result.rows);
+    // ✅ O admin precisa ver o CPF de verdade pra conferir a
+    // identidade do prestador antes de aprovar — decifra só aqui,
+    // na hora de mostrar, nunca fica decifrado em lugar nenhum.
+    const linhas = result.rows.map((m) => {
+      try {
+        return { ...m, cpf: m.cpf ? decifrar(m.cpf) : m.cpf };
+      } catch (e) {
+        console.error('Falha ao decifrar CPF do usuário', m.id, '— verifique MP_TOKEN_ENCRYPTION_KEY:', e.message);
+        return { ...m, cpf: '(erro ao decifrar)' };
+      }
+    });
+    res.json(linhas);
   } catch (err) {
     console.error('Erro listarPendentes:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
@@ -827,6 +1129,111 @@ exports.reprovarConta = async (req, res) => {
     res.json({ mensagem: 'Conta reprovada' });
   } catch (err) {
     console.error('Erro reprovarConta:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ✅ NOVO: ativa o plano Pro numa conta, sem precisar de pagamento —
+// só pra uso do admin durante testes/demonstração, enquanto a
+// integração de pagamento real não está pronta. Funciona mesmo se a
+// conta nunca abriu Financeiro (nesse caso ainda não existe linha em
+// "assinaturas" — INSERT ... ON CONFLICT cobre os dois casos com uma
+// query só, sem precisar checar antes).
+exports.ativarProTeste = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(
+      `INSERT INTO assinaturas (usuario_id, plano, status)
+       VALUES ($1, 'pro', 'ativa')
+       ON CONFLICT (usuario_id) DO UPDATE SET plano = 'pro', status = 'ativa'`,
+      [id]
+    );
+    res.json({ mensagem: 'Plano Pro ativado (teste) — sem cobrança real.' });
+  } catch (err) {
+    console.error('Erro ativarProTeste:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NOVO: dados pessoais do TUTOR (nome, telefone, cpf, rg,
+// endereço, data de nascimento) — antes só existiam no AsyncStorage
+// do celular, sem nenhuma tabela no servidor. Direto em "usuarios",
+// já que é 1:1 com a conta.
+// ═══════════════════════════════════════════════════════════════
+exports.buscarDadosPessoais = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const result = await pool.query(
+      'SELECT nome, email, telefone, cpf, rg, endereco, data_nascimento FROM usuarios WHERE id = $1',
+      [usuario_id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ erro: 'Usuário não encontrado' });
+    const dados = result.rows[0];
+    try {
+      if (dados.cpf) dados.cpf = decifrar(dados.cpf);
+      if (dados.rg) dados.rg = decifrar(dados.rg);
+    } catch (e) {
+      console.error('Falha ao decifrar CPF/RG do usuário', usuario_id, '— verifique MP_TOKEN_ENCRYPTION_KEY:', e.message);
+      return res.status(500).json({ erro: 'Erro interno do servidor' });
+    }
+    res.json(dados);
+  } catch (err) {
+    console.error('Erro buscarDadosPessoais:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+exports.atualizarDadosPessoais = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const { nome, telefone, cpf, rg, endereco, data_nascimento } = req.body;
+    const result = await pool.query(
+      `UPDATE usuarios SET
+        nome            = COALESCE($1, nome),
+        telefone        = COALESCE($2, telefone),
+        cpf             = COALESCE($3, cpf),
+        rg              = COALESCE($4, rg),
+        endereco        = COALESCE($5, endereco),
+        data_nascimento = COALESCE($6, data_nascimento)
+       WHERE id = $7
+       RETURNING nome, email, telefone, cpf, rg, endereco, data_nascimento`,
+      [nome, telefone, cifrar(cpf), cifrar(rg), endereco, data_nascimento, usuario_id]
+    );
+    const dados = result.rows[0];
+    try {
+      if (dados.cpf) dados.cpf = decifrar(dados.cpf);
+      if (dados.rg) dados.rg = decifrar(dados.rg);
+    } catch (e) {
+      console.error('Falha ao decifrar CPF/RG após salvar, usuário', usuario_id, ':', e.message);
+    }
+    res.json(dados);
+  } catch (err) {
+    console.error('Erro atualizarDadosPessoais:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ✅ NOVO: "compra" (simulada, sem gateway real ainda) do desbloqueio
+// de mais slots de pet — antes vivia só no AsyncStorage.
+exports.verificarPerfisExtras = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    const result = await pool.query('SELECT perfis_extras_desbloqueado FROM usuarios WHERE id = $1', [usuario_id]);
+    res.json({ desbloqueado: !!result.rows[0]?.perfis_extras_desbloqueado });
+  } catch (err) {
+    console.error('Erro verificarPerfisExtras:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+exports.desbloquearPerfisExtras = async (req, res) => {
+  try {
+    const usuario_id = req.usuario.id;
+    await pool.query('UPDATE usuarios SET perfis_extras_desbloqueado = true WHERE id = $1', [usuario_id]);
+    res.json({ mensagem: 'Desbloqueado com sucesso' });
+  } catch (err) {
+    console.error('Erro desbloquearPerfisExtras:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
   }
 };

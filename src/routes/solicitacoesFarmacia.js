@@ -1,5 +1,8 @@
 const express = require('express');
 const router  = express.Router();
+// Este arquivo deve ter o nome solicitacoesFarmacia.js e usar o controller
+// solicitacoesFarmaciaController.js (com criarReceita, escolherDestino,
+// salvarOrcamento, listarMinhasReceitas).
 const solicitacoesController = require('../controllers/solicitacoesFarmaciaController');
 const auth    = require('../middleware/auth');
 
@@ -9,6 +12,7 @@ router.get('/minhas',           auth, solicitacoesController.listarMinhasSolicit
 
 // ✅ Tutor escolhe farmácia/petshop
 router.get('/pendentes',        auth, solicitacoesController.listarReceitasPendentes);  // tutor
+router.get('/minhas-receitas',  auth, solicitacoesController.listarMinhasReceitas);      // tutor
 router.put('/:id/escolher',     auth, solicitacoesController.escolherDestino);          // tutor
 router.get('/disponiveis',      auth, solicitacoesController.listarFarmaciasDisponiveis);
 

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Achei esse pet — H.U.B. Pet</title>
+<style>
+  :root {
+    --navy: #0d2a3e;
+    --verde: #7cb342;
+    --vermelho: #f44336;
+    --laranja: #ff9800;
+    --cinza-texto: #7a8a9a;
+    --fundo: #f1f8f1;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    background: var(--fundo);
+    color: var(--navy);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: #fff;
+    border-radius: 24px;
+    overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+  }
+  .header {
+    background: var(--navy);
+    padding: 20px;
+    text-align: center;
+  }
+  .header-titulo { color: #fff; font-size: 13px; font-weight: 800; letter-spacing: 1.5px; }
+  .header-sub { color: rgba(255,255,255,0.6); font-size: 11px; margin-top: 4px; }
+
+  .foto {
+    width: 140px; height: 140px; border-radius: 70px;
+    object-fit: cover;
+    border: 5px solid #fff;
+    margin: -50px auto 0;
+    display: block;
+    background: #e0eef5;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+  }
+  .foto-placeholder {
+    width: 140px; height: 140px; border-radius: 70px;
+    margin: -50px auto 0;
+    background: #e0eef5;
+    border: 5px solid #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 56px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+  }
+
+  .corpo { padding: 24px; text-align: center; }
+  .achei { font-size: 12px; font-weight: 700; color: var(--verde); letter-spacing: 1px; margin-bottom: 6px; }
+  .nome-pet { font-size: 28px; font-weight: 900; color: var(--navy); margin-bottom: 20px; }
+
+  .alerta-box {
+    background: #fff3e0; border: 1.5px solid #ffcc80; border-radius: 14px;
+    padding: 14px; margin-bottom: 20px; text-align: left;
+  }
+  .alerta-label { font-size: 10px; font-weight: 800; color: #e65100; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .alerta-texto { font-size: 13px; font-weight: 600; color: #7a4a00; line-height: 19px; }
+
+  /* ✅ NOVO: banner de "pet perdido" — mais forte que o alerta comum,
+     já que é a informação mais urgente possível nessa tela. */
+  .perdido-box {
+    background: #fdecea; border: 2px solid #e53935; border-radius: 14px;
+    padding: 16px; margin-bottom: 20px; text-align: center;
+  }
+  .perdido-titulo { font-size: 15px; font-weight: 900; color: #c62828; letter-spacing: 0.3px; }
+  .perdido-texto { font-size: 12.5px; font-weight: 600; color: #8a2a10; margin-top: 4px; }
+
+  .contato-btn {
+    display: block;
+    background: var(--verde);
+    color: #fff;
+    text-decoration: none;
+    padding: 16px;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 800;
+    margin-bottom: 12px;
+  }
+  .telefone-texto { font-size: 13px; font-weight: 600; color: var(--cinza-texto); margin-bottom: 20px; }
+
+  .rodape { font-size: 10px; color: var(--cinza-texto); margin-top: 10px; }
+
+  .loading, .erro-box { padding: 50px 24px; text-align: center; }
+  .erro-icon { font-size: 44px; margin-bottom: 14px; }
+  .erro-titulo { font-size: 16px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+  .erro-texto { font-size: 13px; color: var(--cinza-texto); line-height: 19px; }
+</style>
+</head>
+<body>
+
+  <div class="card" id="card">
+    <div class="loading" id="loading">
+      <div style="font-size:36px;">🐾</div>
+      <p style="margin-top:12px;color:#7a8a9a;font-size:13px;">Carregando...</p>
+    </div>
+  </div>
+
+<script>
+  // ✅ Troca aqui se o endereço do backend mudar algum dia
+  const API_URL = 'https://hub-pet-backend-production.up.railway.app';
+
+  function pegarCodigo() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('codigo');
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  async function carregar() {
+    const codigo = pegarCodigo();
+
+    if (!codigo) {
+      renderizarErro('❔', 'Código não encontrado', 'Esse link parece estar incompleto. Confira o QR code novamente.');
+      return;
+    }
+
+    try {
+      const r = await fetch(`${API_URL}/tags/publica/${codigo}`);
+      const data = await r.json();
+
+      if (r.status === 404) {
+        renderizarErro('🔍', 'Tag não encontrada', 'Esse código não corresponde a nenhuma tag ativa.');
+        return;
+      }
+      if (r.status === 410) {
+        renderizarErro('⚪', 'Tag desativada', 'O tutor desativou essa tag — talvez já tenha uma nova.');
+        return;
+      }
+      if (data.erro) {
+        renderizarErro('⚠️', 'Algo deu errado', data.erro);
+        return;
+      }
+
+      renderizarPet(data);
+    } catch (e) {
+      renderizarErro('📡', 'Sem conexão', 'Não foi possível carregar as informações agora. Tente de novo em instantes.');
+    }
+  }
+
+  function renderizarErro(icone, titulo, texto) {
+    document.getElementById('card').innerHTML = `
+      <div class="erro-box">
+        <div class="erro-icon">${icone}</div>
+        <div class="erro-titulo">${escapeHtml(titulo)}</div>
+        <div class="erro-texto">${escapeHtml(texto)}</div>
+      </div>`;
+  }
+
+  function renderizarPet(pet) {
+    const fotoHtml = pet.foto_url
+      ? `<img class="foto" src="${escapeHtml(pet.foto_url)}" alt="${escapeHtml(pet.nome_perfil)}" />`
+      : `<div class="foto-placeholder">🐾</div>`;
+
+    const alertaHtml = pet.alerta
+      ? `<div class="alerta-box">
+           <div class="alerta-label">⚠️ INFORMAÇÃO IMPORTANTE</div>
+           <div class="alerta-texto">${escapeHtml(pet.alerta)}</div>
+         </div>`
+      : '';
+
+    // ✅ NOVO: se o pet está marcado como perdido no mural do app,
+    // mostra esse banner logo no topo — antes até do alerta comum,
+    // já que é a informação mais urgente possível.
+    const perdidoHtml = pet.perdido
+      ? `<div class="perdido-box">
+           <div class="perdido-titulo">🚨 ESSE PET ESTÁ PERDIDO</div>
+           <div class="perdido-texto">Ligue agora pro tutor — ele está procurando!</div>
+         </div>`
+      : '';
+
+    const telefoneLimpo = (pet.telefone_contato || '').replace(/\D/g, '');
+
+    document.getElementById('card').innerHTML = `
+      <div class="header">
+        <div class="header-titulo">🐾 H.U.B. PET</div>
+        <div class="header-sub">Sistema de identificação de emergência</div>
+      </div>
+      ${fotoHtml}
+      <div class="corpo">
+        <div class="achei">VOCÊ ENCONTROU</div>
+        <div class="nome-pet">${escapeHtml(pet.nome_perfil)}</div>
+        ${perdidoHtml}
+        ${alertaHtml}
+        <a class="contato-btn" href="tel:${telefoneLimpo}">📞 Ligar para o tutor</a>
+        <div class="telefone-texto">${escapeHtml(pet.telefone_contato)}</div>
+        <div class="rodape">Obrigado por ajudar a reunir ${escapeHtml(pet.nome_perfil)} com a família 💚</div>
+      </div>`;
+  }
+
+  carregar();
+</script>
+
+</body>
+</html>
