@@ -12,9 +12,23 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes('railway.internal')
     ? false
     : { rejectUnauthorized: false },
+  // ✅ NOVO: sem isso, se o banco ficar inalcançável, cada requisição esperava
+  // PRA SEMPRE por uma conexão (o padrão do pg é não ter limite). Agora falha
+  // em 10s com um erro claro, e o app segue respondendo o resto.
+  connectionTimeoutMillis: 10000,
 });
 
-pool.connect()
+// ✅ NOVO: quando o banco reinicia ou a rede oscila, o pg avisa por um evento
+// "error" nas conexões que estavam paradas no pool. Sem ninguém escutando, isso
+// vira uma exceção não tratada. Aqui só registramos; o pool descarta a conexão
+// ruim e abre outra sozinho na próxima consulta.
+pool.on('error', (err) => {
+  console.error('Erro PostgreSQL (conexão ociosa):', err.message);
+});
+
+// ✅ CORRIGIDO: antes era pool.connect().then(...) sem devolver o cliente, o que
+// prendia uma das 10 conexões do pool pra sempre. pool.query pega e devolve sozinho.
+pool.query('SELECT 1')
   .then(() => console.log('PostgreSQL conectado!'))
   .catch(err => console.error('Erro PostgreSQL:', err.message));
 
