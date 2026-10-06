@@ -172,6 +172,11 @@
   .status-em_analise { background: #fff3e0; color: #c1440e; }
   .status-procedente { background: #eaf6e6; color: var(--verde-escuro); }
   .status-improcedente { background: #f0f2f4; color: var(--cinza-texto); }
+  .status-estorno_falhou { background: #fdecea; color: var(--vermelho); }
+  .status-pagamento_sem_cobranca { background: #fff3e0; color: #c1440e; }
+  .status-mp_desconectado { background: #e8f0fe; color: #1a5fb4; }
+  .alerta-valor { font-size: 20px; font-weight: 800; color: var(--navy); margin: 6px 0 10px; }
+  .alerta-erro { font-family: monospace; font-size: 11px; word-break: break-word; }
   .denuncia-anonimo { font-size: 12px; font-weight: 700; color: var(--cinza-texto); }
   .denuncia-alvo { font-size: 15px; font-weight: 800; color: var(--navy); margin: 6px 0 10px; }
   .denuncia-alvo-tag { font-size: 10px; font-weight: 800; color: var(--azul); letter-spacing: 0.5px; }
@@ -241,12 +246,19 @@
         Denúncias
         <span class="aba-badge" id="badge-denuncias" style="display:none;">0</span>
       </button>
+      <button class="aba-btn" id="aba-pagamentos" onclick="trocarAba('pagamentos')">
+        Pagamentos
+        <span class="aba-badge" id="badge-pagamentos" style="display:none;">0</span>
+      </button>
     </div>
 
     <div class="conteudo" id="lista-pendentes">
       <div class="loading">Carregando...</div>
     </div>
     <div class="conteudo" id="lista-denuncias" style="display:none;">
+      <div class="loading">Carregando...</div>
+    </div>
+    <div class="conteudo" id="lista-pagamentos" style="display:none;">
       <div class="loading">Carregando...</div>
     </div>
   </div>
@@ -338,6 +350,14 @@
         const r = await fetch(`${API_URL}/denuncias/admin`, { headers: { Authorization: `Bearer ${token}` } });
         const data = await r.json();
         if (Array.isArray(data)) { denunciasAtual = data; atualizarBadgeDenuncias(); }
+      } catch (e) {}
+    })();
+    (async () => {
+      try {
+        const token = getToken();
+        const r = await fetch(`${API_URL}/pagamento-mp/admin/alertas`, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await r.json();
+        if (Array.isArray(data)) { alertasAtual = data; atualizarBadgePagamentos(); }
       } catch (e) {}
     })();
   }
@@ -534,14 +554,16 @@
 
   // ═══════════════════════ DENÚNCIAS ═══════════════════════
   let denunciasAtual = [];
+  let alertasAtual = [];
   let acaoPendenteConfirmar = null; // { titulo, texto, executar }
 
   function trocarAba(aba) {
-    document.getElementById('aba-pendentes').classList.toggle('ativa', aba === 'pendentes');
-    document.getElementById('aba-denuncias').classList.toggle('ativa', aba === 'denuncias');
-    document.getElementById('lista-pendentes').style.display = aba === 'pendentes' ? 'block' : 'none';
-    document.getElementById('lista-denuncias').style.display = aba === 'denuncias' ? 'block' : 'none';
+    for (const nome of ['pendentes', 'denuncias', 'pagamentos']) {
+      document.getElementById('aba-' + nome).classList.toggle('ativa', aba === nome);
+      document.getElementById('lista-' + nome).style.display = aba === nome ? 'block' : 'none';
+    }
     if (aba === 'denuncias') carregarDenuncias();
+    if (aba === 'pagamentos') carregarAlertas();
   }
 
   async function carregarDenuncias() {
@@ -654,6 +676,126 @@
       atualizarBadgeDenuncias();
     } catch (e) {
       alert('Não foi possível atualizar o status.');
+    }
+  }
+
+  // ═══════ ABA PAGAMENTOS: situações que precisam de uma pessoa ═══════
+  const ALERTA_LABEL = {
+    estorno_falhou: 'ESTORNO FALHOU',
+    pagamento_sem_cobranca: 'PAGAMENTO SEM COBRANÇA',
+    mp_desconectado: 'MERCADO PAGO DESCONECTADO',
+  };
+
+  function formatarReais(v) {
+    return Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  }
+
+  async function carregarAlertas() {
+    const token = getToken();
+    if (!token) { sair(); return; }
+    try {
+      const r = await fetch(`${API_URL}/pagamento-mp/admin/alertas`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await r.json();
+      if (data.erro) { limparToken(); sair(); return; }
+      alertasAtual = Array.isArray(data) ? data : [];
+      renderizarListaAlertas();
+      atualizarBadgePagamentos();
+    } catch (e) {
+      document.getElementById('lista-pagamentos').innerHTML =
+        '<div class="loading">Erro ao carregar. Recarregue a página.</div>';
+    }
+  }
+
+  function atualizarBadgePagamentos() {
+    const badge = document.getElementById('badge-pagamentos');
+    if (alertasAtual.length > 0) { badge.textContent = alertasAtual.length; badge.style.display = 'flex'; }
+    else { badge.style.display = 'none'; }
+  }
+
+  function renderizarListaAlertas() {
+    const container = document.getElementById('lista-pagamentos');
+    if (alertasAtual.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">✅</div>
+          <div class="empty-titulo">Nenhum pagamento pendente de atenção</div>
+          <div class="empty-texto">Estornos e cobranças estão em dia.</div>
+        </div>`;
+      return;
+    }
+    container.innerHTML = alertasAtual.map(a => cardAlertaHTML(a)).join('');
+  }
+
+  function cardAlertaHTML(a) {
+    const dataFmt = new Date(a.criado_em).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+    const linha = (rotulo, valor) => valor ? `<div class="info-row"><div class="info-label">${rotulo}</div><div class="info-valor">${valor}</div></div>` : '';
+    const referencia = a.consulta_id ? `Consulta #${a.consulta_id}` : (a.solicitacao_farmacia_id ? `Receita #${a.solicitacao_farmacia_id}` : '');
+    const profissional = a.profissional_nome
+      ? `${escapeHtml(a.profissional_nome)}${a.profissional_email ? ' · ' + escapeHtml(a.profissional_email) : ''}${a.profissional_telefone ? ' · ' + escapeHtml(a.profissional_telefone) : ''}`
+      : '';
+    const tutor = a.tutor_nome ? `${escapeHtml(a.tutor_nome)}${a.tutor_email ? ' · ' + escapeHtml(a.tutor_email) : ''}` : '';
+
+    const detalheRotulo = a.tipo === 'estorno_falhou' ? 'Resposta do Mercado Pago' : 'O que aconteceu';
+    const detalhe = a.detalhe ? `<span class="${a.tipo === 'estorno_falhou' ? 'alerta-erro' : ''}">${escapeHtml(a.detalhe)}</span>` : '';
+
+    const botaoReestornar = a.tipo === 'estorno_falhou'
+      ? `<button class="denuncia-acao-btn btn-suspender" onclick="reestornarAlerta(${a.id}, this)">🔁 Tentar estornar de novo</button>` : '';
+
+    return `
+      <div class="card" id="alerta-${a.id}">
+        <div class="card-header">
+          <span class="status-pill status-${a.tipo}">${ALERTA_LABEL[a.tipo] || escapeHtml(a.tipo)}</span>
+          <div class="data-text">${dataFmt}</div>
+        </div>
+        ${a.valor != null ? `<div class="alerta-valor">${formatarReais(a.valor)}</div>` : ''}
+        <div class="info-box">
+          ${linha('Referência', referencia)}
+          ${linha('Profissional', profissional)}
+          ${linha('Tutor', tutor)}
+          ${linha('Pagamento nº', a.mp_payment_id ? escapeHtml(a.mp_payment_id) : '')}
+          ${linha(detalheRotulo, detalhe)}
+          ${a.tentativas > 1 ? linha('Ocorrências', a.tentativas) : ''}
+        </div>
+        <div class="denuncia-acoes">
+          ${botaoReestornar}
+          <button class="denuncia-acao-btn btn-procedente" onclick="resolverAlerta(${a.id})">✓ Marcar como resolvido</button>
+        </div>
+      </div>`;
+  }
+
+  async function reestornarAlerta(id, botao) {
+    const a = alertasAtual.find(x => x.id === id);
+    const valor = a && a.valor != null ? formatarReais(a.valor) : 'o valor';
+    if (!confirm(`Tentar devolver ${valor} ao tutor agora?`)) return;
+    const textoOriginal = botao.textContent;
+    botao.disabled = true; botao.textContent = 'Estornando...';
+    try {
+      const r = await fetch(`${API_URL}/pagamento-mp/admin/alertas/${id}/reestornar`, {
+        method: 'POST', headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      const data = await r.json();
+      if (!r.ok || data.erro) alert(data.erro || 'Não foi possível estornar agora.');
+      else alert(data.mensagem);
+      await carregarAlertas();
+    } catch (e) {
+      alert('Não foi possível estornar agora.');
+      botao.disabled = false; botao.textContent = textoOriginal;
+    }
+  }
+
+  async function resolverAlerta(id) {
+    if (!confirm('Marcar como resolvido? Faça isso só depois de conferir no painel do Mercado Pago.')) return;
+    try {
+      const r = await fetch(`${API_URL}/pagamento-mp/admin/alertas/${id}/resolver`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      const data = await r.json();
+      if (!r.ok || data.erro) { alert(data.erro || 'Não foi possível atualizar.'); await carregarAlertas(); return; }
+      alertasAtual = alertasAtual.filter(x => x.id !== id);
+      renderizarListaAlertas();
+      atualizarBadgePagamentos();
+    } catch (e) {
+      alert('Não foi possível atualizar.');
     }
   }
 

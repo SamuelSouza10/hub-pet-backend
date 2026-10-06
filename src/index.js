@@ -161,6 +161,16 @@ cron.schedule('0 9 * * *', () => {
   verificarEEnviarLembretes();
 });
 
+// ✅ NOVO: renova os tokens do Mercado Pago dos profissionais que vencem em
+// até 30 dias (o token vale 180 dias; sem isso as cobranças parariam em
+// ~6 meses). Roda todo dia às 3h30 (UTC) e também 1 minuto depois de cada
+// reinício, caso o servidor estivesse fora do ar na hora marcada.
+const { renovarTokensProximosDoVencimento } = require('./controllers/mercadoPagoController');
+const rodarRenovacaoMp = () => renovarTokensProximosDoVencimento()
+  .catch((e) => console.error('[mp-tokens] erro na renovação:', e.message));
+cron.schedule('30 3 * * *', rodarRenovacaoMp);
+setTimeout(rodarRenovacaoMp, 60 * 1000);
+
 process.on('uncaughtException', (err) => {
   console.error('Erro não capturado:', err.message);
 });

@@ -3,7 +3,8 @@ const crypto = require('crypto');
 // ✅ NOVO: o access_token do profissional nunca é salvo em texto
 // puro — se o banco vazar, sem essa chave (que vive só nas
 // variáveis de ambiente, nunca no banco) o token não serve pra nada.
-const { cifrar } = require('../utils/cryptoUtil');
+const { cifrar, decifrar } = require('../utils/cryptoUtil');
+const { registrarAlerta, resolverAlertas } = require('../utils/alertasPagamento');
 
 // ═══════════════════════════════════════════════════════════════
 // H.U.B. Pet — Conexão OAuth com Mercado Pago.
@@ -114,6 +115,7 @@ exports.callbackConexao = async (req, res) => {
       [dados.user_id, cifrar(dados.access_token), cifrar(dados.refresh_token), expiraEm, medico_id]
     );
 
+    await resolverAlertas([`mp-desconectado:${medico_id}`]);
     res.send(paginaResultado(true, 'Agora você já pode receber pagamentos direto no app.'));
   } catch (err) {
     console.error('Erro callbackConexao:', err.message);
@@ -146,4 +148,87 @@ exports.desconectar = async (req, res) => {
     console.error('Erro desconectar:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
   }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NOVO: renovação automática dos tokens dos profissionais.
+//
+// O access_token do Mercado Pago vale 180 dias. Sem renovar, daqui a
+// ~6 meses TODAS as cobranças dos profissionais parariam de funcionar,
+// sem erro visível. A renovação troca o refresh_token por um access_token
+// novo (mais 180 dias) sem o profissional precisar fazer nada.
+//
+// ATENÇÃO: a cada renovação o Mercado Pago também troca o refresh_token —
+// o novo precisa ser gravado, senão a cadeia de renovação se perde.
+// ═══════════════════════════════════════════════════════════════
+exports.renovarTokensProximosDoVencimento = async (diasAntes = 30) => {
+  const resumo = { verificados: 0, renovados: 0, desconectados: 0, falhas: 0 };
+  if (!MP_CLIENT_ID || !MP_CLIENT_SECRET) {
+    console.error('[mp-tokens] MP_CLIENT_ID/MP_CLIENT_SECRET não configurados — renovação não executada.');
+    return resumo;
+  }
+
+  const candidatos = await pool.query(
+    `SELECT usuario_id, mp_refresh_token, mp_token_expira_em FROM medicos
+     WHERE mp_conectado = true AND mp_refresh_token IS NOT NULL
+       AND (mp_token_expira_em IS NULL OR mp_token_expira_em < NOW() + make_interval(days => $1::int))`,
+    [diasAntes]
+  );
+
+  for (const linha of candidatos.rows) {
+    resumo.verificados++;
+    try {
+      const refreshAtual = decifrar(linha.mp_refresh_token);
+      const resp = await fetch('https://api.mercadopago.com/oauth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: MP_CLIENT_ID,
+          client_secret: MP_CLIENT_SECRET,
+          grant_type: 'refresh_token',
+          refresh_token: refreshAtual,
+        }),
+      });
+      const dados = await resp.json().catch(() => ({}));
+
+      if (resp.ok && dados.access_token) {
+        const expiraEm = new Date(Date.now() + (dados.expires_in || 15552000) * 1000);
+        // "AND mp_refresh_token = <o que lemos>": se o profissional reconectou enquanto
+        // renovávamos, o token novo DELE não é sobrescrito pelo nosso.
+        const upd = await pool.query(
+          `UPDATE medicos SET mp_access_token = $1, mp_refresh_token = $2, mp_token_expira_em = $3
+           WHERE usuario_id = $4 AND mp_refresh_token = $5`,
+          [cifrar(dados.access_token), cifrar(dados.refresh_token || refreshAtual), expiraEm, linha.usuario_id, linha.mp_refresh_token]
+        );
+        if (upd.rowCount === 0) console.log(`[mp-tokens] profissional ${linha.usuario_id} reconectou durante a renovação — mantido o token dele.`);
+        resumo.renovados++;
+      } else {
+        resumo.falhas++;
+        console.error(`[mp-tokens] falha ao renovar token do profissional ${linha.usuario_id} (HTTP ${resp.status}):`, JSON.stringify(dados));
+        // Só desconecta quando o token JÁ VENCEU (aí não serve mais pra nada). Antes disso
+        // uma falha não derruba nada — assim um erro de configuração (ex.: client_secret
+        // errado) não desconecta todo mundo de uma vez; fica só nos logs, com 30 dias de folga.
+        const jaVenceu = linha.mp_token_expira_em && new Date(linha.mp_token_expira_em) < new Date();
+        if (jaVenceu && resp.status >= 400 && resp.status < 500) {
+          await pool.query(
+            'UPDATE medicos SET mp_conectado = false WHERE usuario_id = $1 AND mp_refresh_token = $2',
+            [linha.usuario_id, linha.mp_refresh_token]
+          );
+          resumo.desconectados++;
+          console.error(`[mp-tokens] profissional ${linha.usuario_id} marcado como DESCONECTADO (token vencido e não renovável) — precisa reconectar o Mercado Pago.`);
+          await registrarAlerta({
+            tipo: 'mp_desconectado', chave: `mp-desconectado:${linha.usuario_id}`, medico_id: linha.usuario_id,
+            detalhe: 'O token do Mercado Pago venceu e não pôde ser renovado. Peça pro profissional reconectar em Configurações → Receber Pagamentos. Até lá ele não consegue receber pagamentos.',
+          });
+        }
+      }
+    } catch (e) {
+      resumo.falhas++;
+      console.error(`[mp-tokens] erro renovando token do profissional ${linha.usuario_id}:`, e.message);
+    }
+    await new Promise((r) => setTimeout(r, 200)); // gentileza com a API
+  }
+
+  console.log(`[mp-tokens] verificados=${resumo.verificados} renovados=${resumo.renovados} desconectados=${resumo.desconectados} falhas=${resumo.falhas}`);
+  return resumo;
 };

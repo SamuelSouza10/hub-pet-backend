@@ -3,6 +3,8 @@ const crypto = require('crypto');
 // ✅ NOVO: o access_token do profissional é salvo cifrado — precisa
 // decifrar antes de usar em qualquer chamada à API da Mercado Pago.
 const { decifrar } = require('../utils/cryptoUtil');
+// ✅ NOVO: situações que precisam de uma pessoa aparecem no painel /admin (aba Pagamentos).
+const { registrarAlerta, resolverAlertas } = require('../utils/alertasPagamento');
 // ✅ Reaproveita a MESMA constante de taxa (10%) da camada de
 // abstração já existente (services/servicoPagamento.js) — ela já foi
 // pensada pra essa migração ("se um dia migrar pro Split, só essas
@@ -66,6 +68,13 @@ exports.criarPreferencia = async (req, res) => {
     );
     if (consultaResult.rows.length === 0) return res.status(404).json({ erro: 'Consulta não encontrada' });
     const consulta = consultaResult.rows[0];
+
+    // ✅ NOVO: não abre outro checkout pra uma consulta que já foi paga
+    // (evita pagamento em duplicidade).
+    const jaPaga = await pool.query(
+      "SELECT 1 FROM pagamentos_mp WHERE consulta_id = $1 AND status = 'aprovado' LIMIT 1", [consulta.id]
+    );
+    if (jaPaga.rows.length > 0) return res.status(400).json({ erro: 'Essa consulta já foi paga.' });
 
     const medicoResult = await pool.query(
       'SELECT mp_access_token, mp_conectado, tipo_conta FROM medicos WHERE usuario_id = $1',
@@ -183,6 +192,12 @@ exports.criarPreferenciaFarmacia = async (req, res) => {
     );
     if (solicitacaoResult.rows.length === 0) return res.status(404).json({ erro: 'Solicitação não encontrada' });
     const solicitacao = solicitacaoResult.rows[0];
+
+    // ✅ NOVO: não abre outro checkout pra uma receita que já foi paga.
+    const jaPagaFarm = await pool.query(
+      "SELECT 1 FROM pagamentos_mp WHERE solicitacao_farmacia_id = $1 AND status = 'aprovado' LIMIT 1", [solicitacao.id]
+    );
+    if (jaPagaFarm.rows.length > 0) return res.status(400).json({ erro: 'Essa receita já foi paga.' });
 
     if (solicitacao.status === 'cancelada') {
       return res.status(400).json({ erro: 'Essa solicitação foi cancelada.' });
@@ -302,6 +317,182 @@ function validarAssinaturaWebhook(req) {
   return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// WEBHOOK de pagamento
+//
+// ✅ REESCRITO. A versão anterior tinha 3 defeitos graves:
+//   1) Pix nunca virava "aprovado": o 1º aviso (QR gerado, status
+//      "pending") gravava o id do pagamento na cobrança, e o aviso
+//      seguinte (aprovado) já não achava a cobrança, porque a busca
+//      exigia mp_payment_id vazio.
+//   2) Ligava o pagamento à cobrança errada: só conferia que o token do
+//      vendedor conseguia LER o pagamento, e então marcava a cobrança
+//      pendente mais recente DELE — que podia ser de outra consulta.
+//   3) Só olhava as 50 cobranças pendentes mais recentes de todo o
+//      sistema; checkouts abandonados empurravam pagamentos legítimos
+//      pra fora dessa janela.
+// Agora: acha o vendedor pelo user_id do aviso, confirma o pagamento na
+// API com o token DELE, e liga à cobrança certa pelo external_reference.
+// ═══════════════════════════════════════════════════════════════
+const STATUS_MP = {
+  approved: 'aprovado',
+  authorized: 'pendente', pending: 'pendente', in_process: 'pendente', in_mediation: 'pendente',
+  rejected: 'recusado', cancelled: 'recusado',
+  refunded: 'estornado', charged_back: 'estornado',
+};
+
+// Avisos do Mercado Pago podem chegar repetidos e fora de ordem. Só
+// "avançamos" o status, nunca voltamos: aprovado só pode virar estornado,
+// e estornado é final.
+function transicaoPermitida(atual, novo) {
+  if (atual === novo) return true;
+  if (atual === 'estornado') return false;
+  if (atual === 'estornando') return novo === 'estornado';
+  if (atual === 'aprovado') return novo === 'estornado';
+  return true; // pendente, recusado, expirado
+}
+
+async function buscarPagamentoMp(paymentId, tokenCifrado, medicoId) {
+  let token;
+  try {
+    token = decifrar(tokenCifrado);
+  } catch (e) {
+    console.error('Falha ao decifrar token do medico', medicoId, '— verifique MP_TOKEN_ENCRYPTION_KEY:', e.message);
+    return null;
+  }
+  const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return r.ok ? await r.json() : null;
+}
+
+// Quem pode ser o dono desse pagamento? O aviso traz o user_id do vendedor
+// (é o mp_user_id que guardamos na conexão). Se não vier, ou não achar,
+// tenta cada vendedor DISTINTO que tem cobrança aberta (nunca cada cobrança).
+async function vendedoresCandidatos(userIdMp) {
+  if (userIdMp && /^\d+$/.test(String(userIdMp))) {
+    const r = await pool.query(
+      `SELECT usuario_id AS medico_id, mp_access_token FROM medicos
+       WHERE mp_user_id = $1 AND mp_conectado = true AND mp_access_token IS NOT NULL`,
+      [String(userIdMp)]
+    );
+    if (r.rows.length > 0) return r.rows;
+  }
+  const r = await pool.query(
+    `SELECT DISTINCT m.usuario_id AS medico_id, m.mp_access_token
+     FROM pagamentos_mp pm JOIN medicos m ON m.usuario_id = pm.medico_id
+     WHERE pm.mp_payment_id IS NULL AND pm.status = 'pendente' AND m.mp_access_token IS NOT NULL
+     LIMIT 50`
+  );
+  return r.rows;
+}
+
+async function processarNotificacaoPagamento(paymentId, userIdMp) {
+  paymentId = String(paymentId);
+
+  // Pagamento que já conhecemos (aviso de atualização)? Então o vendedor é conhecido.
+  const conhecido = (await pool.query(
+    `SELECT pm.medico_id, m.mp_access_token FROM pagamentos_mp pm
+     JOIN medicos m ON m.usuario_id = pm.medico_id WHERE pm.mp_payment_id = $1`,
+    [paymentId]
+  )).rows[0];
+
+  let pagamentoMp = null, medicoId = null;
+  const candidatos = conhecido ? [conhecido] : await vendedoresCandidatos(userIdMp);
+  for (const v of candidatos) {
+    pagamentoMp = await buscarPagamentoMp(paymentId, v.mp_access_token, v.medico_id);
+    if (pagamentoMp) { medicoId = v.medico_id; break; }
+  }
+  if (!pagamentoMp) {
+    // Normal pra pagamentos que não são de profissional (ex.: assinatura Pro da plataforma).
+    console.log('Webhook: pagamento', paymentId, 'não é de nenhum vendedor conhecido — ignorado.');
+    return;
+  }
+
+  const novoStatus = STATUS_MP[pagamentoMp.status] || 'pendente';
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const porPagamento = () => client.query('SELECT * FROM pagamentos_mp WHERE mp_payment_id = $1 FOR UPDATE', [paymentId]);
+
+    let alvo = (await porPagamento()).rows[0];
+
+    if (!alvo) {
+      // Primeiro aviso desse pagamento: liga à cobrança certa pelo external_reference.
+      const ref = String(pagamentoMp.external_reference || '');
+      const mf = ref.match(/^farmacia-(\d+)$/);
+      const coluna = mf ? 'solicitacao_farmacia_id' : (/^\d+$/.test(ref) ? 'consulta_id' : null);
+      if (coluna) {
+        alvo = (await client.query(
+          `SELECT * FROM pagamentos_mp
+           WHERE ${coluna} = $1 AND medico_id = $2 AND mp_payment_id IS NULL AND status = 'pendente'
+           ORDER BY criado_em DESC LIMIT 1 FOR UPDATE`,
+          [mf ? Number(mf[1]) : Number(ref), medicoId]
+        )).rows[0];
+      }
+      // Outro aviso do MESMO pagamento pode ter ligado a cobrança enquanto esperávamos o bloqueio.
+      if (!alvo) alvo = (await porPagamento()).rows[0];
+    }
+
+    if (!alvo) {
+      await client.query('ROLLBACK');
+      console.error(
+        `Webhook: pagamento ${paymentId} (ref "${pagamentoMp.external_reference}", vendedor ${medicoId}) não tem cobrança pendente correspondente — ` +
+        'possível pagamento duplicado. REQUER AÇÃO MANUAL.'
+      );
+      // Só alerta se o dinheiro realmente entrou (aprovado).
+      if (pagamentoMp.status === 'approved') {
+        await registrarAlerta({
+          tipo: 'pagamento_sem_cobranca', chave: `pagamento:${paymentId}`, mp_payment_id: paymentId, medico_id: medicoId,
+          valor: pagamentoMp.transaction_amount,
+          detalhe: `Referência "${pagamentoMp.external_reference || '—'}". Pode ser pagamento em duplicidade (o tutor pagou duas vezes) ou uma cobrança que não foi encontrada. Confira no painel do Mercado Pago.`,
+        });
+      }
+      return;
+    }
+
+    if (!transicaoPermitida(alvo.status, novoStatus)) {
+      await client.query('ROLLBACK');
+      console.log(`Webhook: pagamento ${paymentId} — "${alvo.status}" -> "${novoStatus}" ignorado (aviso fora de ordem).`);
+      return;
+    }
+
+    await client.query(
+      'UPDATE pagamentos_mp SET mp_payment_id = $1, status = $2, atualizado_em = NOW() WHERE id = $3',
+      [paymentId, novoStatus, alvo.id]
+    );
+
+    if (novoStatus === 'aprovado') {
+      // Outras cobranças abertas do mesmo item (checkout aberto mais de uma vez) não valem mais.
+      await client.query(
+        `UPDATE pagamentos_mp SET status = 'expirado', atualizado_em = NOW()
+         WHERE id <> $1 AND status = 'pendente' AND mp_payment_id IS NULL
+           AND ((consulta_id IS NOT NULL AND consulta_id = $2)
+             OR (solicitacao_farmacia_id IS NOT NULL AND solicitacao_farmacia_id = $3))`,
+        [alvo.id, alvo.consulta_id, alvo.solicitacao_farmacia_id]
+      );
+    }
+    if (alvo.consulta_id && (novoStatus === 'aprovado' || novoStatus === 'estornado')) {
+      await client.query('UPDATE consultas SET pago = $1 WHERE id = $2', [novoStatus === 'aprovado', alvo.consulta_id]);
+    }
+    await client.query('COMMIT');
+    // Estorno confirmado pelo Mercado Pago (até se feito à mão no painel deles): fecha o alerta no /admin.
+    if (novoStatus === 'estornado') {
+      await resolverAlertas([
+        alvo.consulta_id ? `estorno:consulta:${alvo.consulta_id}` : null,
+        alvo.solicitacao_farmacia_id ? `estorno:farmacia:${alvo.solicitacao_farmacia_id}` : null,
+      ].filter(Boolean));
+    }
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+exports.processarNotificacaoPagamento = processarNotificacaoPagamento;
+
 exports.webhook = async (req, res) => {
   try {
     // Responde rápido — a Mercado Pago espera 200/201 em até 22s.
@@ -318,44 +509,7 @@ exports.webhook = async (req, res) => {
     const paymentId = req.query['data.id'] || req.body?.data?.id;
     if (!paymentId) return;
 
-    // Busca a linha pendente correspondente — precisamos saber QUAL
-    // profissional pra usar o access_token certo na consulta à API.
-    const pendente = await pool.query(
-      `SELECT pm.*, m.mp_access_token FROM pagamentos_mp pm
-       JOIN medicos m ON m.usuario_id = pm.medico_id
-       WHERE pm.mp_payment_id IS NULL AND pm.status = 'pendente'
-       ORDER BY pm.criado_em DESC LIMIT 50`
-    );
-
-    // Consulta o pagamento de verdade na API (nunca confia só no
-    // webhook) — tenta com o token de cada profissional com cobrança
-    // pendente recente até achar o dono desse payment_id.
-    let pagamentoMp = null, linhaCorrespondente = null;
-    for (const linha of pendente.rows) {
-      let tokenDecifrado;
-      try {
-        tokenDecifrado = decifrar(linha.mp_access_token);
-      } catch (e) {
-        console.error('Falha ao decifrar token do medico', linha.medico_id, '— pulando essa linha:', e.message);
-        continue;
-      }
-      const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-        headers: { Authorization: `Bearer ${tokenDecifrado}` },
-      });
-      if (r.ok) { pagamentoMp = await r.json(); linhaCorrespondente = linha; break; }
-    }
-    if (!pagamentoMp) {
-      console.error('Webhook: payment_id não correspondeu a nenhuma cobrança pendente conhecida:', paymentId);
-      return;
-    }
-
-    const statusMap = { approved: 'aprovado', rejected: 'recusado', refunded: 'estornado', cancelled: 'recusado' };
-    const novoStatus = statusMap[pagamentoMp.status] || 'pendente';
-
-    await pool.query(
-      `UPDATE pagamentos_mp SET mp_payment_id = $1, status = $2, atualizado_em = NOW() WHERE id = $3`,
-      [String(paymentId), novoStatus, linhaCorrespondente.id]
-    );
+    await processarNotificacaoPagamento(paymentId, req.body?.user_id);
   } catch (err) {
     console.error('Erro webhook Mercado Pago:', err.message);
   }
@@ -368,7 +522,12 @@ exports.webhook = async (req, res) => {
 // Função interna, reaproveitada tanto por consulta quanto por
 // farmácia — a lógica de estorno em si é idêntica, só muda qual
 // coluna identifica o pagamento.
-async function _estornarPorColuna(coluna, id, chaveIdempotencia, descricao) {
+// Devolve { ok, status?, nada?, motivo? }. Quem chama no fluxo automático ignora o
+// retorno; o painel /admin usa pra "Tentar estornar de novo".
+// ✅ Quando falha, abre um alerta no painel (antes só ia pro log do Railway).
+async function _estornarPorColuna(coluna, id, chaveIdempotencia, descricao, tentativa = 1) {
+  const chaveAlerta = `estorno:${coluna === 'consulta_id' ? 'consulta' : 'farmacia'}:${id}`;
+  let p = null;
   try {
     const pagamento = await pool.query(
       `SELECT pm.*, m.mp_access_token FROM pagamentos_mp pm
@@ -376,10 +535,17 @@ async function _estornarPorColuna(coluna, id, chaveIdempotencia, descricao) {
        WHERE pm.${coluna} = $1 AND pm.status = 'aprovado' LIMIT 1`,
       [id]
     );
-    if (pagamento.rows.length === 0) return; // nunca foi pago, nada a estornar
+    if (pagamento.rows.length === 0) {
+      // Nunca foi pago, ou já foi estornado: nada a fazer (e qualquer alerta aberto perdeu o motivo).
+      await resolverAlertas([chaveAlerta]);
+      return { ok: true, nada: true };
+    }
 
-    const p = pagamento.rows[0];
+    p = pagamento.rows[0];
     p.mp_access_token = decifrar(p.mp_access_token); // já está dentro do try/catch da função toda
+    // Nova tentativa = nova chave de idempotência, pra Mercado Pago não devolver a falha antiga
+    // guardada. Não há risco de estornar duas vezes: reembolso acima do valor pago é recusado.
+    const chave = tentativa > 1 ? `${chaveIdempotencia}-t${tentativa}` : chaveIdempotencia;
     // ✅ Header específico pra Pix: sem ele, um reembolso que fica
     // temporariamente "em contingência" (comunicação com o Bacen)
     // volta como erro 400 genérico. Com ele, vem 201 + status
@@ -389,37 +555,59 @@ async function _estornarPorColuna(coluna, id, chaveIdempotencia, descricao) {
       headers: {
         Authorization: `Bearer ${p.mp_access_token}`,
         'X-Render-In-Process-Refunds': 'true',
-        'X-Idempotency-Key': chaveIdempotencia,
+        'X-Idempotency-Key': chave,
       },
     });
     if (!r.ok) {
       const erro = await r.text();
       console.error(`FALHA AO ESTORNAR pagamento ${p.mp_payment_id} (${descricao}) — requer ação manual:`, erro);
-      return;
+      const motivo = `HTTP ${r.status}: ${String(erro).slice(0, 400)}`;
+      await registrarAlerta({
+        tipo: 'estorno_falhou', chave: chaveAlerta,
+        consulta_id: p.consulta_id, solicitacao_farmacia_id: p.solicitacao_farmacia_id, pagamento_mp_id: p.id,
+        mp_payment_id: p.mp_payment_id, medico_id: p.medico_id, valor: p.valor_total, detalhe: motivo,
+      });
+      return { ok: false, motivo };
     }
     const resultado = await r.json();
     const novoStatus = resultado.status === 'in_process' ? 'estornando' : 'estornado';
     await pool.query(`UPDATE pagamentos_mp SET status = $1, atualizado_em = NOW() WHERE id = $2`, [novoStatus, p.id]);
+    await resolverAlertas([chaveAlerta]);
+    return { ok: true, status: novoStatus };
   } catch (err) {
     console.error(`Erro ao tentar estornar ${descricao} — requer ação manual:`, err.message);
+    await registrarAlerta({
+      tipo: 'estorno_falhou', chave: chaveAlerta,
+      consulta_id: coluna === 'consulta_id' ? Number(id) : null,
+      solicitacao_farmacia_id: coluna === 'solicitacao_farmacia_id' ? Number(id) : null,
+      pagamento_mp_id: p?.id ?? null, mp_payment_id: p?.mp_payment_id ?? null, medico_id: p?.medico_id ?? null,
+      valor: p?.valor_total ?? null, detalhe: `Erro: ${err.message}`,
+    });
+    return { ok: false, motivo: err.message };
   }
 }
 
-exports.estornarSeNecessario = (consulta_id) =>
-  _estornarPorColuna('consulta_id', consulta_id, `estorno-consulta-${consulta_id}`, `consulta ${consulta_id}`);
+exports.estornarSeNecessario = (consulta_id, tentativa = 1) =>
+  _estornarPorColuna('consulta_id', consulta_id, `estorno-consulta-${consulta_id}`, `consulta ${consulta_id}`, tentativa);
 
 // ✅ NOVO: mesma lógica, pra quando a farmácia cancela uma solicitação
 // que já tinha sido paga (chamado em solicitacoesFarmaciaController2.js).
-exports.estornarSeNecessarioFarmacia = (solicitacao_id) =>
-  _estornarPorColuna('solicitacao_farmacia_id', solicitacao_id, `estorno-farmacia-${solicitacao_id}`, `solicitação de farmácia ${solicitacao_id}`);
+exports.estornarSeNecessarioFarmacia = (solicitacao_id, tentativa = 1) =>
+  _estornarPorColuna('solicitacao_farmacia_id', solicitacao_id, `estorno-farmacia-${solicitacao_id}`, `solicitação de farmácia ${solicitacao_id}`, tentativa);
 
 // ── O app consulta isso pra saber se a consulta já foi paga ───────
 exports.statusPagamento = async (req, res) => {
   try {
     const { consulta_id } = req.params;
+    // ✅ Só o tutor ou o profissional daquela consulta enxergam o status (antes
+    // qualquer usuário logado podia consultar qualquer consulta). Se houver um
+    // pagamento aprovado, ele tem prioridade sobre cobranças abertas mais novas.
     const result = await pool.query(
-      'SELECT status, valor_total FROM pagamentos_mp WHERE consulta_id = $1 ORDER BY criado_em DESC LIMIT 1',
-      [consulta_id]
+      `SELECT pm.status, pm.valor_total FROM pagamentos_mp pm
+       JOIN consultas c ON c.id = pm.consulta_id
+       WHERE pm.consulta_id = $1 AND (c.paciente_id = $2 OR c.medico_id = $2)
+       ORDER BY (pm.status = 'aprovado') DESC, pm.criado_em DESC LIMIT 1`,
+      [consulta_id, req.usuario.id]
     );
     if (result.rows.length === 0) return res.json({ status: 'sem_cobranca' });
     res.json(result.rows[0]);
@@ -433,13 +621,89 @@ exports.statusPagamentoFarmacia = async (req, res) => {
   try {
     const { solicitacao_id } = req.params;
     const result = await pool.query(
-      'SELECT status, valor_total FROM pagamentos_mp WHERE solicitacao_farmacia_id = $1 ORDER BY criado_em DESC LIMIT 1',
-      [solicitacao_id]
+      `SELECT pm.status, pm.valor_total FROM pagamentos_mp pm
+       JOIN solicitacoes_farmacia s ON s.id = pm.solicitacao_farmacia_id
+       WHERE pm.solicitacao_farmacia_id = $1
+         AND (s.paciente_id = $2 OR s.farmacia_id = $2 OR s.veterinario_id = $2)
+       ORDER BY (pm.status = 'aprovado') DESC, pm.criado_em DESC LIMIT 1`,
+      [solicitacao_id, req.usuario.id]
     );
     if (result.rows.length === 0) return res.json({ status: 'sem_cobranca' });
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Erro statusPagamentoFarmacia:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PAINEL /admin — aba "Pagamentos" (rotas protegidas por adminAuth)
+// ═══════════════════════════════════════════════════════════════
+exports.listarAlertasAdmin = async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT a.id, a.tipo, a.consulta_id, a.solicitacao_farmacia_id, a.mp_payment_id, a.valor, a.detalhe,
+              a.tentativas, a.criado_em, a.atualizado_em,
+              pu.nome AS profissional_nome, pu.email AS profissional_email, m.telefone AS profissional_telefone,
+              tu.nome AS tutor_nome, tu.email AS tutor_email
+       FROM alertas_pagamento a
+       LEFT JOIN usuarios pu ON pu.id = a.medico_id
+       LEFT JOIN medicos m ON m.usuario_id = a.medico_id
+       LEFT JOIN pagamentos_mp pm ON pm.id = a.pagamento_mp_id
+       LEFT JOIN usuarios tu ON tu.id = pm.paciente_id
+       WHERE a.resolvido = false
+       ORDER BY a.criado_em DESC LIMIT 200`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('Erro listarAlertasAdmin:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// "Tentar estornar de novo" — só pra alertas de estorno que falhou.
+exports.reestornarAlertaAdmin = async (req, res) => {
+  try {
+    if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ erro: 'Alerta inválido' });
+    const a = (await pool.query('SELECT * FROM alertas_pagamento WHERE id = $1 AND resolvido = false', [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ erro: 'Alerta não encontrado (talvez já resolvido).' });
+    if (a.tipo !== 'estorno_falhou') return res.status(400).json({ erro: 'Só estornos que falharam podem ser tentados de novo.' });
+
+    const tentativa = (a.tentativas || 1) + 1;
+    let resultado;
+    if (a.consulta_id) {
+      resultado = await _estornarPorColuna('consulta_id', a.consulta_id, `estorno-consulta-${a.consulta_id}`, `consulta ${a.consulta_id}`, tentativa);
+    } else if (a.solicitacao_farmacia_id) {
+      resultado = await _estornarPorColuna('solicitacao_farmacia_id', a.solicitacao_farmacia_id, `estorno-farmacia-${a.solicitacao_farmacia_id}`, `solicitação de farmácia ${a.solicitacao_farmacia_id}`, tentativa);
+    } else {
+      return res.status(400).json({ erro: 'Esse alerta perdeu a referência da consulta/receita. Estorne direto no painel do Mercado Pago e marque como resolvido.' });
+    }
+
+    if (!resultado.ok) return res.status(400).json({ erro: `O Mercado Pago recusou de novo — ${resultado.motivo}` });
+    res.json({
+      mensagem: resultado.nada ? 'Esse pagamento já não precisava de estorno.'
+        : resultado.status === 'estornando' ? 'Estorno enviado — o Mercado Pago ainda está processando.'
+        : 'Estornado com sucesso.',
+    });
+  } catch (err) {
+    console.error('Erro reestornarAlertaAdmin:', err.message);
+    res.status(500).json({ erro: 'Erro interno do servidor' });
+  }
+};
+
+// "Marcar como resolvido" — pra quando a pessoa resolveu por fora (ex.: estornou no painel do Mercado Pago).
+exports.resolverAlertaAdmin = async (req, res) => {
+  try {
+    if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ erro: 'Alerta inválido' });
+    const r = await pool.query(
+      `UPDATE alertas_pagamento SET resolvido = true, resolvido_em = NOW(), atualizado_em = NOW()
+       WHERE id = $1 AND resolvido = false`,
+      [req.params.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ erro: 'Alerta não encontrado (talvez já resolvido).' });
+    res.json({ mensagem: 'Marcado como resolvido.' });
+  } catch (err) {
+    console.error('Erro resolverAlertaAdmin:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
   }
 };
