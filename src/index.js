@@ -52,6 +52,33 @@ app.get('/health', (req, res) => {
   res.status(200).send('ok');
 });
 
+// ✅ NOVO: "o BANCO está respondendo?" — pra um monitor externo (UptimeRobot,
+// Better Stack etc.) avisar quando o banco cair, não só quando o servidor cair.
+// Fica separado do /health de propósito: o /health é o que o Railway usa na hora do
+// deploy, e uma oscilação momentânea do banco não deve impedir um deploy de subir.
+// Responde só "ok"/"falhou", sem detalhes de erro, por ser público.
+const poolSaude = require('./database');
+const limitarSaude = require('express-rate-limit')({
+  windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
+  message: { status: 'limite', banco: 'desconhecido' },
+});
+app.get('/health/db', limitarSaude, async (req, res) => {
+  let timer;
+  try {
+    await Promise.race([
+      poolSaude.query('SELECT 1'),
+      new Promise((_, rejeitar) => { timer = setTimeout(() => rejeitar(new Error('sem resposta em 3s')), 3000); }),
+    ]);
+    res.status(200).json({ status: 'ok', banco: 'ok' });
+  } catch (e) {
+    console.error('[health] banco não respondeu:', e.message);
+    res.status(503).json({ status: 'erro', banco: 'falhou' });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+// fim /health/db
+
 // Rotas
 const authRoutes      = require('./routes/auth');
 const medicosRoutes   = require('./routes/medicos');
