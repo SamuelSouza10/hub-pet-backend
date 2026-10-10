@@ -1148,7 +1148,7 @@ exports.ativarProTeste = async (req, res) => {
        ON CONFLICT (usuario_id) DO UPDATE SET plano = 'pro', status = 'ativa'`,
       [id]
     );
-    res.json({ mensagem: 'Plano Pro ativado (teste) — sem cobrança real.' });
+    res.json({ mensagem: 'Plano Pro liberado (sem cobrança).' });
   } catch (err) {
     console.error('Erro ativarProTeste:', err.message);
     res.status(500).json({ erro: 'Erro interno do servidor' });
