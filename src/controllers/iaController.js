@@ -6,7 +6,13 @@
 const MODELO = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const MAX_MENSAGENS = 40;
 const MAX_CARACTERES = 60000;
-const MAX_TOKENS_SAIDA = 4096;
+const MAX_TOKENS_SAIDA = 8192;
+// Modelos "thinking" gastam parte do limite pensando; sem folga a resposta
+// chega vazia/cortada e o JSON do app quebra. Multiplicamos o pedido do app.
+const FOLGA_PENSAMENTO = 4;
+
+// Aparece no log de deploy do Railway: confirma se a chave chegou.
+console.log('[IA] GEMINI_API_KEY', process.env.GEMINI_API_KEY ? 'definida' : 'AUSENTE', '| modelo:', MODELO);
 
 function limpar(body) {
   const { contents, generationConfig } = body || {};
@@ -33,7 +39,7 @@ function limpar(body) {
     cfg.temperature = Math.min(Math.max(generationConfig.temperature, 0), 2);
   }
   const max = Number(generationConfig?.maxOutputTokens);
-  cfg.maxOutputTokens = Number.isFinite(max) && max > 0 ? Math.min(max, MAX_TOKENS_SAIDA) : 1024;
+  cfg.maxOutputTokens = Number.isFinite(max) && max > 0 ? Math.min(max * FOLGA_PENSAMENTO, MAX_TOKENS_SAIDA) : 4096;
   return { contents: limpo, generationConfig: cfg };
 }
 
@@ -58,6 +64,9 @@ exports.gerar = async (req, res) => {
     if (!r.ok) {
       console.error('Gemini erro', r.status, JSON.stringify(data).slice(0, 300));
       return res.status(502).json({ erro: 'O assistente não respondeu. Tente de novo.' });
+    }
+    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+      console.error('Gemini sem texto:', data?.candidates?.[0]?.finishReason, JSON.stringify(data?.promptFeedback || {}).slice(0, 200));
     }
     res.json(data);
   } catch (err) {
