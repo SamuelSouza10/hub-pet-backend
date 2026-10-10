@@ -170,29 +170,6 @@ exports.buscarPerfilAtivo = async (req, res) => {
 
 // ═══════════════════ PRONTUÁRIO ═══════════════════════════════
 
-// ✅ NOVO: "extras" = { ficha, vermifugos, pesos } — dados do prontuário que o app
-// guarda num JSON só. Aceita só essas 3 chaves, com o tipo certo e tamanho limitado,
-// pra ninguém encher o banco com lixo. Devolve null se estiver inválido.
-function limparExtras(extras) {
-  if (extras === undefined || extras === null) return { ok: true, valor: null };
-  if (typeof extras !== 'object' || Array.isArray(extras)) return { ok: false };
-  const saida = {};
-  if (extras.ficha !== undefined) {
-    if (typeof extras.ficha !== 'object' || extras.ficha === null || Array.isArray(extras.ficha)) return { ok: false };
-    saida.ficha = extras.ficha;
-  }
-  if (extras.vermifugos !== undefined) {
-    if (!Array.isArray(extras.vermifugos) || extras.vermifugos.length > 500) return { ok: false };
-    saida.vermifugos = extras.vermifugos;
-  }
-  if (extras.pesos !== undefined) {
-    if (!Array.isArray(extras.pesos) || extras.pesos.length > 2000) return { ok: false };
-    saida.pesos = extras.pesos;
-  }
-  if (JSON.stringify(saida).length > 200000) return { ok: false };
-  return { ok: true, valor: Object.keys(saida).length ? saida : null };
-}
-
 // ── Buscar prontuário de um pet ───────────────────────────────
 exports.buscarProntuario = async (req, res) => {
   try {
@@ -223,9 +200,7 @@ exports.atualizarProntuario = async (req, res) => {
     if (!(await pertenceAoTutor(perfil_id, tutor_id)))
       return res.status(403).json({ erro: 'Esse pet não pertence a você' });
 
-    const { alergias, condicoes, cirurgias, exames, medicamentos, observacoes, extras } = req.body;
-    const extrasLimpo = limparExtras(extras);
-    if (!extrasLimpo.ok) return res.status(400).json({ erro: 'Dados extras do prontuário inválidos' });
+    const { alergias, condicoes, cirurgias, exames, medicamentos, observacoes } = req.body;
     const result = await pool.query(
       `UPDATE prontuario_pet SET
         alergias     = COALESCE($1, alergias),
@@ -234,9 +209,8 @@ exports.atualizarProntuario = async (req, res) => {
         exames       = COALESCE($4, exames),
         medicamentos = COALESCE($5, medicamentos),
         observacoes  = COALESCE($6, observacoes),
-        extras       = COALESCE(extras, '{}'::jsonb) || COALESCE($7::jsonb, '{}'::jsonb),
         atualizado_em = NOW()
-       WHERE perfil_id = $8 RETURNING *`,
+       WHERE perfil_id = $7 RETURNING *`,
       [
         alergias ? JSON.stringify(alergias) : null,
         condicoes ? JSON.stringify(condicoes) : null,
@@ -244,7 +218,6 @@ exports.atualizarProntuario = async (req, res) => {
         exames ? JSON.stringify(exames) : null,
         medicamentos ? JSON.stringify(medicamentos) : null,
         observacoes,
-        extrasLimpo.valor ? JSON.stringify(extrasLimpo.valor) : null,
         perfil_id,
       ]
     );
