@@ -139,6 +139,8 @@ const petsPerdidosRoutes = require('./routes/petsPerdidos');
 const mercadoPagoRoutes = require('./routes/mercadoPago');
 const pagamentoMpRoutes = require('./routes/pagamento-mp');
 const assinaturaProRoutes = require('./routes/assinatura-pro');
+// Assistente de IA (Gemini) via backend — a chave fica só no Railway.
+const iaRoutes = require('./routes/ia');
 
 app.use('/auth',      authRoutes);
 app.use('/medicos',   medicosRoutes);
@@ -173,6 +175,7 @@ app.use('/mercadopago', mercadoPagoRoutes);
 app.use('/pagamento-mp', pagamentoMpRoutes);
 app.use('/assinatura-pro', assinaturaProRoutes);
 app.use('/calculadoras', calculadorasRoutes);
+app.use('/ia', iaRoutes);
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('Servidor rodando na porta ' + PORT);
