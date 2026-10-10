@@ -44,7 +44,11 @@ app.get('/privacidade', (req, res) => {
 });
 
 // Health check
+// Site do app (página inicial pública). O status em JSON continua em /status.
 app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/site/index.html'));
+});
+app.get('/status', (req, res) => {
   res.status(200).json({ status: 'ok', versao: '1.0.0' });
 });
 

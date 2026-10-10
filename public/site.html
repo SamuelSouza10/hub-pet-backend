@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H.U.B. Pet — veterinário, petshop e cuidadores perto de você</title>
+<meta name="description" content="Encontre veterinário, clínica, petshop, farmácia e cuidadores para o seu pet. Agende, pague pelo app e guarde o histórico de saúde em um só lugar.">
+<meta name="theme-color" content="#cce8f4">
+<meta property="og:type" content="website">
+<meta property="og:title" content="H.U.B. Pet — a ponte entre o seu pet e quem cuida dele">
+<meta property="og:description" content="Agende consultas, pague pelo app e acompanhe a saúde do seu pet.">
+<meta property="og:locale" content="pt_BR">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23cce8f4'/%3E%3Cpath d='M8 44 C20 14 44 14 56 44' fill='none' stroke='%231976d2' stroke-width='6' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='44' r='5' fill='%234caf50'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ceu:#cce8f4; --ceu-claro:#eaf5fa; --papel:#fbfdfe;
+  --tinta:#0d2a3e; --tinta-suave:#41627a;
+  --azul:#1976d2; --verde:#4caf50; --verde-escuro:#2e7d32;
+  --sol:#ffc107; --coral:#f44336;
+  --linha:rgba(13,42,62,.16);
+  --titulo:"Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --corpo:"Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --gutter:clamp(20px,5vw,64px);
+  --max:1160px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--papel);color:var(--tinta);font:400 1.0625rem/1.6 var(--corpo);-webkit-font-smoothing:antialiased}
+img,svg{max-width:100%}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--azul);outline-offset:3px;border-radius:4px}
+.pular{position:absolute;left:-999px;top:8px;background:var(--tinta);color:#fff;padding:10px 16px;border-radius:8px;z-index:20}
+.pular:focus{left:8px}
+.wrap{width:100%;max-width:var(--max);margin:0 auto;padding-inline:var(--gutter)}
+h1,h2,h3{font-family:var(--titulo);margin:0;letter-spacing:-.02em;line-height:1.02}
+h2{font-size:clamp(2rem,4.4vw,3.2rem);font-weight:800;max-width:16ch}
+p{margin:0}
+.leitura{max-width:58ch}
+
+/* logo */
+.logo{font-family:var(--titulo);font-weight:800;font-size:1.5rem;letter-spacing:.02em;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+.logo .h,.logo .b{color:var(--azul)} .logo .u{color:var(--verde)} .logo .p{color:var(--tinta)}
+.logo small{font:600 .8rem var(--corpo);letter-spacing:0;color:var(--tinta-suave);margin-left:4px}
+
+/* topo */
+.topo{background:var(--ceu)}
+.topo .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-block:18px}
+.topo nav{display:flex;align-items:center;gap:clamp(14px,3vw,32px);font-weight:600;font-size:.98rem}
+.topo nav a{text-decoration:none;padding:6px 2px;border-bottom:2px solid transparent}
+.topo nav a:hover{border-color:var(--tinta)}
+.botao{white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:10px 22px;border-radius:999px;background:var(--tinta);color:#fff!important;font-weight:600;text-decoration:none;border:2px solid var(--tinta);transition:background .15s,transform .15s}
+.botao:hover{background:var(--azul);border-color:var(--azul)}
+.botao.claro{background:transparent;color:var(--tinta)!important}
+.botao.claro:hover{background:var(--tinta);color:#fff!important;border-color:var(--tinta)}
+@media (max-width:640px){.topo nav a.some{display:none}.topo .botao{min-height:40px;padding:6px 16px;font-size:.95rem}.logo small{display:none}}
+
+/* hero */
+.hero{background:var(--ceu);padding:clamp(28px,4.5vw,56px) 0 0;overflow:hidden}
+.hero h1{font-size:clamp(2.6rem,6.6vw,5.2rem);font-weight:800;max-width:22ch;line-height:.98}
+.hero .sub{margin-top:20px;font-size:clamp(1.1rem,2vw,1.3rem);max-width:46ch;color:var(--tinta)}
+.hero .acoes{display:flex;flex-wrap:wrap;gap:12px;margin-top:26px;align-items:center}
+.loja{display:inline-flex;flex-direction:column;justify-content:center;min-height:54px;padding:8px 22px;border-radius:14px;background:var(--tinta);color:#fff;text-decoration:none;line-height:1.15}
+.loja small{font-size:.74rem;opacity:.8}
+.loja strong{font-family:var(--titulo);font-size:1.08rem;font-weight:700}
+.loja[aria-disabled="true"]{background:transparent;color:var(--tinta);border:2px dashed rgba(13,42,62,.45);cursor:default}
+.loja[aria-disabled="true"] small{opacity:.75}
+
+/* ponte */
+.ponte{position:relative;margin-top:clamp(28px,5vw,56px);aspect-ratio:1200/300}
+.ponte svg{position:absolute;inset:0;width:100%;height:100%}
+.arco{fill:none;stroke:var(--azul);stroke-width:7;stroke-linecap:round}
+.pendural{stroke:var(--azul);stroke-width:2.5;opacity:.55}
+.tabuleiro{stroke:var(--tinta);stroke-width:9;stroke-linecap:round}
+.pilar{stroke:var(--tinta);stroke-width:9;stroke-linecap:round}
+.no{position:absolute;top:66.67%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;font-weight:600;font-size:.95rem;white-space:nowrap}
+.no i{width:22px;height:22px;border-radius:50%;border:5px solid var(--ceu);box-sizing:content-box;margin:-5px;flex:none}
+.no span{margin-top:10px;color:var(--tinta)}
+.ponta{position:absolute;top:66.67%;font-weight:600;font-size:.88rem;color:var(--tinta-suave);max-width:15ch;line-height:1.25}
+.ponta.esq{left:3.333%;top:91%;max-width:none}
+.ponta.dir{right:3.333%;top:91%;text-align:right;max-width:none}
+.ponte .lista-movel{display:none}
+.ponte-espaco{height:32px}
+@media (max-width:760px){
+  .arco{stroke-width:14}.tabuleiro,.pilar{stroke-width:18}
+  .no,.ponta,.pendural{display:none}
+  .ponte .lista-movel{display:flex;flex-wrap:wrap;gap:8px;position:absolute;top:calc(100% + 18px);left:0;right:0}
+  .hero{padding-bottom:0}
+  .ponte-espaco{height:120px}
+}
+.lista-movel li{list-style:none;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.65);border-radius:999px;padding:6px 14px;font-weight:600;font-size:.92rem}
+.lista-movel i{width:10px;height:10px;border-radius:50%}
+.lista-movel{margin:0;padding:0}
+
+/* animação única: o arco se desenha, depois os pontos aparecem */
+@media (prefers-reduced-motion:no-preference){
+  .arco{stroke-dasharray:1;stroke-dashoffset:1;animation:desenha 1.7s .2s cubic-bezier(.5,0,.2,1) forwards}
+  .tabuleiro,.pilar{stroke-dasharray:1;stroke-dashoffset:1;animation:desenha 1s .1s ease-out forwards}
+  .pendural{opacity:0;animation:aparece .5s 1.4s forwards}
+  .no{opacity:0;animation:aparece .5s forwards;animation-delay:calc(1.1s + var(--i)*.16s)}
+  .ponta{opacity:0;animation:aparece .6s 1.9s forwards}
+  @keyframes desenha{to{stroke-dashoffset:0}}
+  @keyframes aparece{to{opacity:1}}
+}
+@media (prefers-reduced-motion:no-preference) and (max-width:760px){
+  .lista-movel{opacity:0;animation:aparece .6s 1.5s forwards}
+}
+
+/* seções */
+section{padding:clamp(56px,9vw,112px) 0}
+.duas{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(28px,6vw,88px);align-items:start}
+@media (max-width:860px){.duas{grid-template-columns:1fr}}
+.duas .cab{position:sticky;top:28px}
+@media (max-width:860px){.duas .cab{position:static}}
+.duas .cab p{margin-top:20px;color:var(--tinta-suave)}
+
+dl.itens{margin:0}
+dl.itens div{display:grid;grid-template-columns:14px 1fr;column-gap:16px;padding:22px 0;border-top:1px solid var(--linha)}
+dl.itens div:last-child{border-bottom:1px solid var(--linha)}
+dl.itens i{width:12px;height:12px;border-radius:50%;margin-top:9px}
+dl.itens dt{font-family:var(--titulo);font-weight:700;font-size:1.35rem;letter-spacing:-.01em;line-height:1.2}
+dl.itens dd{margin:6px 0 0;color:var(--tinta-suave);grid-column:2}
+
+/* quem atende */
+.atende{background:var(--ceu-claro)}
+.atende h2{max-width:18ch}
+.linhas{margin:clamp(28px,5vw,56px) 0 0;padding:0;list-style:none}
+.linhas li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:12px 40px;align-items:baseline;padding:18px 0;border-top:1px solid var(--linha)}
+.linhas li:last-child{border-bottom:1px solid var(--linha)}
+.linhas strong{font-family:var(--titulo);font-weight:800;font-size:clamp(1.7rem,4vw,2.8rem);letter-spacing:-.02em;line-height:1}
+.linhas span{color:var(--tinta-suave)}
+@media (max-width:700px){.linhas li{grid-template-columns:1fr}}
+
+/* profissionais */
+.pro{background:var(--tinta);color:#fff}
+.pro .duas .cab p{color:rgba(255,255,255,.78)}
+.pro .botao{background:var(--sol);border-color:var(--sol);color:var(--tinta)!important;margin-top:28px}
+.pro .botao:hover{background:#fff;border-color:#fff}
+.pro dl.itens div{border-color:rgba(255,255,255,.2)}
+.pro dl.itens dd{color:rgba(255,255,255,.76)}
+.aviso{margin-top:28px;padding:18px 20px;border-left:5px solid var(--sol);background:rgba(255,255,255,.07);border-radius:0 12px 12px 0;color:rgba(255,255,255,.9);max-width:46ch;font-size:.98rem}
+
+/* passos */
+.passos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:clamp(20px,4vw,48px);margin:clamp(32px,5vw,56px) 0 0;padding:0;list-style:none;counter-reset:p}
+.passos li{counter-increment:p;border-top:4px solid var(--azul);padding-top:18px}
+.passos li:nth-child(2){border-color:var(--verde)}
+.passos li:nth-child(3){border-color:var(--sol)}
+.passos li::before{content:counter(p);font-family:var(--titulo);font-weight:800;font-size:3.2rem;line-height:1;display:block;margin-bottom:10px}
+.passos h3{font-size:1.4rem;font-weight:700;letter-spacing:-.01em;margin-bottom:8px}
+.passos p{color:var(--tinta-suave)}
+@media (max-width:760px){.passos{grid-template-columns:1fr}}
+
+/* segurança */
+.seguro{background:var(--ceu-claro)}
+
+/* faq */
+.faq details{border-top:1px solid var(--linha);padding:4px 0}
+.faq details:last-child{border-bottom:1px solid var(--linha)}
+.faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:20px;align-items:center;padding:20px 0;font-family:var(--titulo);font-weight:700;font-size:1.2rem;letter-spacing:-.01em}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-size:1.7rem;line-height:1;font-weight:500;color:var(--azul);transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq details p{padding:0 0 22px;color:var(--tinta-suave);max-width:62ch}
+
+/* baixar */
+.baixar{background:var(--ceu)}
+.baixar h2{max-width:14ch;font-size:clamp(2.2rem,5.4vw,4rem)}
+.baixar .acoes{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
+.baixar p.nota{margin-top:18px;color:var(--tinta-suave);font-size:.95rem}
+
+/* rodapé */
+footer{background:var(--tinta);color:rgba(255,255,255,.82);padding:44px 0 56px;font-size:.95rem}
+footer .wrap{display:flex;flex-wrap:wrap;gap:24px 48px;justify-content:space-between;align-items:flex-start}
+footer .logo .h,footer .logo .b{color:#8ec5ff} footer .logo .u{color:#8fd694} footer .logo .p{color:#fff}
+footer ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:10px 28px}
+footer a{text-decoration:none;border-bottom:1px solid rgba(255,255,255,.35)}
+footer a:hover{color:#fff;border-color:#fff}
+footer .peq{flex-basis:100%;font-size:.86rem;opacity:.7}
+</style>
+</head>
+<body>
+<a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+<header class="topo">
+  <div class="wrap">
+    <a class="logo" href="#" aria-label="H.U.B. Pet, início"><span class="h">H</span><span class="p">.</span><span class="u">U</span><span class="p">.</span><span class="b">B</span><span class="p">.</span> Pet</a>
+    <nav aria-label="Principal">
+      <a class="some" href="#tutores">Para tutores</a>
+      <a class="some" href="#profissionais">Para profissionais</a>
+      <a class="some" href="#perguntas">Perguntas</a>
+      <a class="botao" href="#baixar">Baixar o app</a>
+    </nav>
+  </div>
+</header>
+
+<main id="conteudo">
+<section class="hero">
+  <div class="wrap">
+    <h1>A ponte entre o seu pet e quem cuida dele.</h1>
+    <p class="sub">Encontre veterinário, clínica, petshop, farmácia e cuidadores perto de você. Agende, pague pelo app e guarde a saúde do seu pet em um só lugar.</p>
+    <div class="acoes">
+      <a class="loja" data-loja="android" aria-disabled="true"><small>Em breve no</small><strong>Google Play</strong></a>
+      <a class="loja" data-loja="ios" aria-disabled="true"><small>Em breve na</small><strong>App Store</strong></a>
+      <a class="botao claro" href="#profissionais">Sou profissional</a>
+    </div>
+
+    <div class="ponte" role="img" aria-label="Uma ponte liga você e seu pet a veterinários, clínicas, petshops, farmácias e cuidadores.">
+      <svg viewBox="0 0 1200 300" preserveAspectRatio="none" aria-hidden="true">
+        <line class="pilar" pathLength="1" x1="40" y1="200" x2="40" y2="262"/>
+        <line class="pilar" pathLength="1" x1="1160" y1="200" x2="1160" y2="262"/>
+        <g>
+          <line class="pendural" x1="120" y1="154.8" x2="120" y2="200"/>
+          <line class="pendural" x1="200" y1="123.4" x2="200" y2="200"/>
+          <line class="pendural" x1="280" y1="100.7" x2="280" y2="200"/>
+          <line class="pendural" x1="400" y1="78.3" x2="400" y2="200"/>
+          <line class="pendural" x1="500" y1="68.3" x2="500" y2="200"/>
+          <line class="pendural" x1="600" y1="65" x2="600" y2="200"/>
+          <line class="pendural" x1="700" y1="68.3" x2="700" y2="200"/>
+          <line class="pendural" x1="800" y1="78.3" x2="800" y2="200"/>
+          <line class="pendural" x1="920" y1="100.7" x2="920" y2="200"/>
+          <line class="pendural" x1="1000" y1="123.4" x2="1000" y2="200"/>
+          <line class="pendural" x1="1080" y1="154.8" x2="1080" y2="200"/>
+        </g>
+        <line class="tabuleiro" pathLength="1" x1="40" y1="200" x2="1160" y2="200"/>
+        <path class="arco" pathLength="1" d="M40 200 C300 20 900 20 1160 200"/>
+      </svg>
+      <div class="no" style="left:16.667%;--i:0"><i style="background:var(--coral)"></i><span>Veterinário</span></div>
+      <div class="no" style="left:33.333%;--i:1"><i style="background:var(--sol)"></i><span>Clínica</span></div>
+      <div class="no" style="left:50%;--i:2"><i style="background:var(--verde)"></i><span>Petshop</span></div>
+      <div class="no" style="left:66.667%;--i:3"><i style="background:var(--azul)"></i><span>Farmácia</span></div>
+      <div class="no" style="left:83.333%;--i:4"><i style="background:var(--coral)"></i><span>Cuidador</span></div>
+      <div class="ponta esq">Você e o seu pet</div>
+      <div class="ponta dir">Cuidado perto de casa</div>
+      <ul class="lista-movel">
+        <li><i style="background:var(--coral)"></i>Veterinário</li>
+        <li><i style="background:var(--sol)"></i>Clínica</li>
+        <li><i style="background:var(--verde)"></i>Petshop</li>
+        <li><i style="background:var(--azul)"></i>Farmácia</li>
+        <li><i style="background:var(--coral)"></i>Cuidador</li>
+      </ul>
+    </div>
+  </div>
+  <div class="ponte-espaco"></div>
+</section>
+
+<section id="tutores">
+  <div class="wrap duas">
+    <div class="cab">
+      <h2>Tudo do seu pet em um lugar só.</h2>
+      <p class="leitura">O app é gratuito para tutores. Você escolhe o profissional, marca o horário e acompanha tudo pelo celular.</p>
+    </div>
+    <dl class="itens">
+      <div><i style="background:var(--coral)"></i><dt>Agende consultas</dt><dd>Veja os horários do profissional e marque a consulta direto pelo celular.</dd></div>
+      <div><i style="background:var(--sol)"></i><dt>Pague pelo app</dt><dd>Pix ou cartão, processado pelo Mercado Pago. Se o profissional não aceitar a consulta, o valor volta para você.</dd></div>
+      <div><i style="background:var(--verde)"></i><dt>Receitas e prontuário digitais</dt><dd>As receitas do veterinário chegam no app, e você escolhe onde retirar o medicamento.</dd></div>
+      <div><i style="background:var(--azul)"></i><dt>Tag de emergência com QR code</dt><dd>Quem encontrar o seu pet escaneia a tag e vê as informações de emergência que você cadastrou.</dd></div>
+      <div><i style="background:var(--coral)"></i><dt>Pets perdidos e adoção</dt><dd>Avise a vizinhança quando um pet sumir, ou conheça animais que procuram uma família.</dd></div>
+      <div><i style="background:var(--sol)"></i><dt>Passeio, visita e hospedagem</dt><dd>Contrate cuidadores e acompanhe o passeio do seu pet em tempo real.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="atende" id="quem-atende">
+  <div class="wrap">
+    <h2>Quem atende pelo app.</h2>
+    <ul class="linhas">
+      <li><strong>Veterinários</strong><span>Consultas, receitas e atestados, com CRMV verificado.</span></li>
+      <li><strong>Clínicas</strong><span>Equipe médica, fila de espera e prontuário compartilhado.</span></li>
+      <li><strong>Petshops</strong><span>Banho, tosa e check-in do pet, com fotos do atendimento.</span></li>
+      <li><strong>Farmácias</strong><span>Receba as receitas dos tutores e envie o orçamento.</span></li>
+      <li><strong>Cuidadores</strong><span>Passeio, visita rápida, pet sitting, hospedagem, adestramento e táxi pet.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Do primeiro toque à consulta.</h2>
+    <ol class="passos">
+      <li><h3>Busque perto de você</h3><p>Filtre por tipo de serviço e veja o perfil, os serviços e os preços de cada profissional.</p></li>
+      <li><h3>Agende e pague</h3><p>Escolha o horário, confirme e pague por Pix ou cartão dentro do app.</p></li>
+      <li><h3>Acompanhe</h3><p>Receba avisos, guarde receitas e o histórico de saúde, e volte quando precisar.</p></li>
+    </ol>
+  </div>
+</section>
+
+<section class="pro" id="profissionais">
+  <div class="wrap duas">
+    <div class="cab">
+      <h2>Para quem cuida de pets.</h2>
+      <p class="leitura">Veterinários, clínicas, petshops, farmácias e cuidadores usam o H.U.B. para organizar a agenda e receber pelo app.</p>
+      <p class="aviso">Sobre cada pagamento feito pelo app, o H.U.B. cobra uma taxa de 10%, somada no fechamento do mês. Não há mensalidade no lançamento.</p>
+      <a class="botao" href="#baixar">Cadastre-se pelo app</a>
+    </div>
+    <dl class="itens">
+      <div><i style="background:var(--sol)"></i><dt>Agenda e recebimento num lugar só</dt><dd>Aceite consultas, gerencie os horários e receba direto na sua conta do Mercado Pago.</dd></div>
+      <div><i style="background:var(--verde)"></i><dt>Perfil verificado</dt><dd>O cadastro passa por conferência do CRMV ou CRM antes de você poder atender pelo app.</dd></div>
+      <div><i style="background:var(--azul)"></i><dt>Ferramentas do dia a dia</dt><dd>Ficha de atendimento, prontuário, relatório mensal, galeria de fotos e rota do dia, conforme o seu tipo de conta.</dd></div>
+      <div><i style="background:var(--coral)"></i><dt>Assistente de IA</dt><dd>Apoio para receitas, atestados e pedidos de exame. O conteúdo gerado é uma sugestão, e a decisão clínica é sempre do profissional.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="seguro">
+  <div class="wrap duas">
+    <div class="cab">
+      <h2>Seus dados e os do seu pet, protegidos.</h2>
+      <p class="leitura">Cuidamos dos dados de acordo com a Lei Geral de Proteção de Dados (LGPD).</p>
+    </div>
+    <dl class="itens">
+      <div><i style="background:var(--azul)"></i><dt>Dados sensíveis criptografados</dt><dd>CPF e RG são guardados criptografados, e a senha nunca é salva em texto.</dd></div>
+      <div><i style="background:var(--verde)"></i><dt>Cartão fora do app</dt><dd>O pagamento é feito no ambiente do Mercado Pago. O H.U.B. não guarda os dados do seu cartão.</dd></div>
+      <div><i style="background:var(--sol)"></i><dt>Você decide sobre a sua conta</dt><dd>Dentro do app você pode exportar os seus dados e excluir a conta.</dd></div>
+      <div><i style="background:var(--coral)"></i><dt>Regras claras</dt><dd>Leia os <a href="/termos">Termos de Uso</a> e a <a href="/privacidade">Política de Privacidade</a>.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="faq" id="perguntas">
+  <div class="wrap duas">
+    <div class="cab"><h2>Perguntas frequentes.</h2></div>
+    <div>
+      <details><summary>O app é gratuito?</summary><p>Para tutores, sim. Os profissionais não pagam mensalidade no lançamento e pagam uma taxa de 10% sobre os valores recebidos pelo app.</p></details>
+      <details><summary>Como sei que o profissional é de verdade?</summary><p>Veterinários e médicos só podem receber consultas depois que o CRMV ou o CRM é conferido pela nossa equipe.</p></details>
+      <details><summary>O que acontece se o profissional não aceitar a consulta?</summary><p>Se você já tiver pago, o valor é devolvido automaticamente pelo mesmo meio de pagamento.</p></details>
+      <details><summary>O assistente de IA substitui o veterinário?</summary><p>Não. Ele ajuda o profissional a escrever documentos e consultar informações, mas não faz diagnóstico. Em caso de emergência, procure um veterinário.</p></details>
+      <details><summary>Posso excluir a minha conta?</summary><p>Pode. No app você exporta os seus dados e exclui a conta quando quiser.</p></details>
+      <details><summary>Quando o app chega às lojas?</summary><p>Em breve, no Google Play e na App Store. Esta página será atualizada com os links de download.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="baixar" id="baixar">
+  <div class="wrap">
+    <h2>Leve a ponte no bolso.</h2>
+    <div class="acoes">
+      <a class="loja" data-loja="android" aria-disabled="true"><small>Em breve no</small><strong>Google Play</strong></a>
+      <a class="loja" data-loja="ios" aria-disabled="true"><small>Em breve na</small><strong>App Store</strong></a>
+    </div>
+    <p class="nota">Os links de download aparecem aqui assim que o app for publicado.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="logo" href="#" aria-label="H.U.B. Pet, início"><span class="h">H</span><span class="p">.</span><span class="u">U</span><span class="p">.</span><span class="b">B</span><span class="p">.</span> Pet</a>
+    <ul>
+      <li><a href="/termos">Termos de Uso</a></li>
+      <li><a href="/privacidade">Política de Privacidade</a></li>
+      <li id="contato-item" hidden><a id="contato-link" href="#">Contato</a></li>
+    </ul>
+    <p class="peq">© <span id="ano">2026</span> H.U.B. Pet — Health Urban Bridge. As informações deste site não substituem a consulta com um médico-veterinário.</p>
+  </div>
+</footer>
+
+<script>
+// Preencha aqui quando tiver os dados. Enquanto estiverem vazios, os botões
+// ficam como "Em breve" e o link de contato fica escondido.
+var CONFIG = {
+  lojaAndroid: "",   // ex.: "https://play.google.com/store/apps/details?id=..."
+  lojaIos: "",       // ex.: "https://apps.apple.com/br/app/..."
+  contato: ""        // ex.: "contato@seudominio.com.br"
+};
+(function(){
+  document.getElementById('ano').textContent = new Date().getFullYear();
+  document.querySelectorAll('[data-loja]').forEach(function(a){
+    var url = a.getAttribute('data-loja') === 'android' ? CONFIG.lojaAndroid : CONFIG.lojaIos;
+    if (url) {
+      a.href = url; a.removeAttribute('aria-disabled');
+      var s = a.querySelector('small'); if (s) s.textContent = a.getAttribute('data-loja') === 'android' ? 'Disponível no' : 'Baixe na';
+    }
+  });
+  if (CONFIG.contato) {
+    var l = document.getElementById('contato-link');
+    l.href = 'mailto:' + CONFIG.contato; l.textContent = CONFIG.contato;
+    document.getElementById('contato-item').hidden = false;
+  }
+})();
+</script>
+</body>
+</html>
