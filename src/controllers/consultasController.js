@@ -23,6 +23,7 @@ const crypto = require('crypto');
 // ✅ NOVO: quando o profissional recusa uma consulta que já foi paga
 // via Pix (cobrança antecipada), precisa estornar automaticamente.
 const { estornarSeNecessario } = require('./pagamentoMpController');
+const pagueParaSolicitar = require('../services/pagueParaSolicitar');
 
 // ── Criar consulta (paciente solicita) ────────────────────────
 // ✅ NOVO: gera um nome de sala aleatório pra Jitsi Meet — não pode
@@ -82,7 +83,7 @@ async function capacidadeDoProfissional(db, medico_id) {
 const SQL_OCUPACOES = `
   SELECT id, data, horario, dia FROM consultas
   WHERE medico_id = $1
-    AND status IN ('pendente', 'aceito', 'remarcar_pendente')
+    AND status IN ('aguardando_pagamento', 'pendente', 'aceito', 'remarcar_pendente')
   UNION ALL
   SELECT id, remarcar_data AS data, remarcar_horario AS horario, dia FROM consultas
   WHERE medico_id = $1 AND status = 'remarcar_pendente' AND remarcar_data IS NOT NULL
@@ -149,6 +150,17 @@ exports.criarConsulta = async (req, res) => {
     // pedidos simultâneos liam "1 vaga livre" ao mesmo tempo e os dois
     // entravam. Com ela, os pedidos do mesmo profissional passam um de
     // cada vez, então o segundo já enxerga a vaga tomada.
+    // Pague-para-solicitar: pagamento OBRIGATÓRIO. Decidido ANTES de pegar a conexão da transação (evita esgotar o pool).
+    const cobranca = await pagueParaSolicitar.verificarCobranca(medico_id, tipoAtendimentoVal, especialidade);
+    if (cobranca !== 'ok') {
+      return res.status(409).json({
+        erro: cobranca === 'sem_mp'
+          ? 'Este profissional ainda não ativou o recebimento pelo app, então não é possível solicitar agora.'
+          : 'Este profissional ainda não definiu o preço desse serviço, então não é possível solicitar agora.',
+        codigo: 'PAGAMENTO_INDISPONIVEL',
+      });
+    }
+
     client = await pool.connect();
     await client.query('BEGIN');
 
@@ -174,7 +186,7 @@ exports.criarConsulta = async (req, res) => {
       `SELECT 1 FROM consultas
        WHERE paciente_id = $1 AND medico_id = $2 AND data = $3 AND horario = $4
          AND perfil_id IS NOT DISTINCT FROM $5
-         AND status IN ('pendente', 'aceito', 'remarcar_pendente') LIMIT 1`,
+         AND status IN ('aguardando_pagamento', 'pendente', 'aceito', 'remarcar_pendente') LIMIT 1`,
       [paciente_id, medico_id, data, horario, perfil_id || null]
     );
     if (duplicada.rows.length > 0) {
@@ -190,10 +202,10 @@ exports.criarConsulta = async (req, res) => {
     }
 
     const result = await client.query(`
-      INSERT INTO consultas (paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil, endereco_atendimento, cidade_atendimento, eh_telemedicina, sala_video, tipo_atendimento)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      INSERT INTO consultas (paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id, nome_perfil, foto_perfil, endereco_atendimento, cidade_atendimento, eh_telemedicina, sala_video, tipo_atendimento, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
-    `, [paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id || null, nome_perfil || null, foto_perfil || null, endereco_atendimento || '', cidade_atendimento || '', ehTelemedicinaVal, salaVideo, tipoAtendimentoVal]);
+    `, [paciente_id, medico_id, data, horario, dia, especialidade, endereco, plano, observacao, perfil_id || null, nome_perfil || null, foto_perfil || null, endereco_atendimento || '', cidade_atendimento || '', ehTelemedicinaVal, salaVideo, tipoAtendimentoVal, 'aguardando_pagamento']);
     await client.query('COMMIT');
 
     // ✅ Solta a conexão da transação AGORA, antes de qualquer outro acesso ao
@@ -206,6 +218,8 @@ exports.criarConsulta = async (req, res) => {
     client = null;
 
     const novaConsulta = result.rows[0];
+    // Só avisa o profissional DEPOIS do pagamento (ver aoPagamentoAprovado).
+    if (novaConsulta.status === 'aguardando_pagamento') return res.status(201).json(novaConsulta);
 
     // Notificação é "melhor esforço": a consulta JÁ foi criada, então uma falha
     // aqui não pode virar erro 500 pro tutor (ele tentaria de novo à toa).
@@ -245,7 +259,7 @@ exports.consultasMedico = async (req, res) => {
         '' AS paciente_foto, 'adulto' AS perfil_tipo
       FROM consultas c
       JOIN usuarios u ON u.id = c.paciente_id
-      WHERE c.medico_id = $1
+      WHERE c.medico_id = $1 AND c.status NOT IN ('aguardando_pagamento', 'expirada')
       ORDER BY c.criado_em DESC
     `, [medico_id]);
     const rows = result.rows.map(r => ({
@@ -276,7 +290,8 @@ exports.consultasPaciente = async (req, res) => {
     if (perfil_id) {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
+          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta,
+          GREATEST(0, EXTRACT(EPOCH FROM (c.criado_em + INTERVAL '15 minutes' - NOW())))::int AS segundos_para_pagar
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -286,7 +301,8 @@ exports.consultasPaciente = async (req, res) => {
     } else {
       result = await pool.query(`
         SELECT c.*, u.nome AS medico_nome, u.email AS medico_email,
-          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta
+          m.especialidade AS especialidade_profissional, m.foto_url, m.telefone AS medico_telefone, m.tipo_conta,
+          GREATEST(0, EXTRACT(EPOCH FROM (c.criado_em + INTERVAL '15 minutes' - NOW())))::int AS segundos_para_pagar
         FROM consultas c
         JOIN usuarios u ON u.id = c.medico_id
         LEFT JOIN medicos m ON m.usuario_id = c.medico_id
@@ -309,7 +325,8 @@ exports.responderConsulta = async (req, res) => {
     if (!['aceito', 'recusado'].includes(status))
       return res.status(400).json({ erro: 'Status inválido' });
     const result = await pool.query(`
-      UPDATE consultas SET status = $1 WHERE id = $2 AND medico_id = $3 RETURNING *
+      UPDATE consultas SET status = $1 WHERE id = $2 AND medico_id = $3
+        AND status NOT IN ('aguardando_pagamento', 'expirada', 'cancelada') RETURNING *
     `, [status, id, medico_id]);
     if (result.rows.length === 0)
       return res.status(404).json({ erro: 'Consulta não encontrada' });
@@ -339,10 +356,8 @@ exports.cancelarConsulta = async (req, res) => {
   try {
     const { id } = req.params;
     const paciente_id = req.usuario.id;
-    const result = await pool.query(`
-      DELETE FROM consultas WHERE id = $1 AND paciente_id = $2 RETURNING *
-    `, [id, paciente_id]);
-    if (result.rows.length === 0)
+    const removida = await pagueParaSolicitar.removerConsultaDoTutor(id, paciente_id);
+    if (!removida)
       return res.status(404).json({ erro: 'Consulta não encontrada' });
     res.json({ mensagem: 'Consulta cancelada com sucesso' });
   } catch (err) {
@@ -574,14 +589,15 @@ exports.cancelarComPrazo = async (req, res) => {
     const dataConsulta = new Date(y, m - 1, d, h, min);
     const agora = new Date();
     const diffHoras = (dataConsulta.getTime() - agora.getTime()) / (1000 * 60 * 60);
-    if (diffHoras < 48) {
+    // Antes de o profissional aceitar, o tutor cancela livremente (e é estornado).
+    if (diffHoras < 48 && ['aceito', 'remarcar_pendente'].includes(c.status)) {
       return res.status(400).json({
         erro: 'Cancelamento não permitido',
         mensagem: 'Não é possível cancelar consultas com menos de 48 horas de antecedência.',
         horas_restantes: Math.round(diffHoras),
       });
     }
-    await pool.query('DELETE FROM consultas WHERE id = $1 AND paciente_id = $2', [id, paciente_id]);
+    await pagueParaSolicitar.removerConsultaDoTutor(id, paciente_id);
     res.json({ mensagem: 'Consulta cancelada com sucesso' });
   } catch (err) {
     console.error('Erro cancelarComPrazo:', err.message);
