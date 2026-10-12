@@ -205,6 +205,10 @@ const rodarRenovacaoMp = () => renovarTokensProximosDoVencimento()
 cron.schedule('30 3 * * *', rodarRenovacaoMp);
 setTimeout(rodarRenovacaoMp, 60 * 1000);
 
+// pague-para-solicitar: expira solicitações não pagas e sem resposta (a cada minuto)
+const pagueParaSolicitar = require('./services/pagueParaSolicitar');
+cron.schedule('* * * * *', () => pagueParaSolicitar.rodarTarefas());
+
 process.on('uncaughtException', (err) => {
   console.error('Erro não capturado:', err.message);
 });

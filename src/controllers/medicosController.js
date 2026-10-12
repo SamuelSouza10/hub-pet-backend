@@ -1,5 +1,14 @@
 const pool = require('../database');
 
+// Só aparece na busca quem consegue receber pelo app (Mercado Pago conectado + ao menos um
+// preço). Para desligar sem novo deploy: BUSCA_SO_COM_PAGAMENTO=false. Farmácia fica de fora
+// da regra (usa orçamento, não tem consulta paga no ato).
+const SO_COM_PAGAMENTO = process.env.BUSCA_SO_COM_PAGAMENTO !== 'false';
+const FILTRO_PAGAMENTO = SO_COM_PAGAMENTO
+  ? `AND (m.tipo_conta = 'farmacia' OR (m.mp_conectado IS TRUE AND m.mp_access_token IS NOT NULL AND EXISTS (SELECT 1 FROM precos_servicos ps2 WHERE ps2.usuario_id = u.id)))`
+  : '';
+
+
 // ── Listar todos os médicos ────────────────────────────────────
 // ✅ SPLIT: backend só de pet — filtro extra `tipo_conta IN (...)` como
 // segunda trava de segurança, além do que já garantimos na hora do
@@ -15,12 +24,14 @@ exports.listarMedicos = async (req, res) => {
         m.especialidade, m.telefone, m.endereco,
         m.crm, m.bio, m.nota, m.foto_url,
         m.cidade, m.cep, m.latitude, m.longitude,
-        m.tipo_conta, m.tem_entrega, m.atendimento_domiciliar, m.telemedicina, m.exames_procedimentos
+        m.tipo_conta, m.tem_entrega, m.atendimento_domiciliar, m.telemedicina, m.exames_procedimentos,
+        (m.mp_conectado IS TRUE AND m.mp_access_token IS NOT NULL AND EXISTS (SELECT 1 FROM precos_servicos ps WHERE ps.usuario_id = u.id)) AS aceita_pagamento
       FROM usuarios u
       JOIN medicos m ON m.usuario_id = u.id
       WHERE u.tipo = 'medico'
         AND m.tipo_conta IN ('veterinario', 'petshop', 'servico', 'clinica', 'farmacia')
         AND m.status_verificacao = 'aprovado'
+        ${FILTRO_PAGAMENTO}
       ORDER BY u.nome ASC
     `);
     res.json(result.rows);
@@ -50,6 +61,7 @@ exports.listarParaMapa = async (req, res) => {
       WHERE u.tipo = 'medico'
         AND m.tipo_conta IN ('veterinario', 'petshop', 'servico', 'clinica', 'farmacia')
         AND m.status_verificacao = 'aprovado'
+        ${FILTRO_PAGAMENTO}
         AND a.plano = 'pro' AND a.status = 'ativa'
         AND m.latitude IS NOT NULL AND m.longitude IS NOT NULL
       ORDER BY u.nome ASC
@@ -73,12 +85,14 @@ exports.buscarMedicos = async (req, res) => {
         m.especialidade, m.telefone, m.endereco,
         m.crm, m.bio, m.nota, m.foto_url,
         m.cidade, m.cep, m.latitude, m.longitude,
-        m.tipo_conta, m.tem_entrega, m.atendimento_domiciliar, m.telemedicina, m.exames_procedimentos
+        m.tipo_conta, m.tem_entrega, m.atendimento_domiciliar, m.telemedicina, m.exames_procedimentos,
+        (m.mp_conectado IS TRUE AND m.mp_access_token IS NOT NULL AND EXISTS (SELECT 1 FROM precos_servicos ps WHERE ps.usuario_id = u.id)) AS aceita_pagamento
       FROM usuarios u
       JOIN medicos m ON m.usuario_id = u.id
       WHERE u.tipo = 'medico'
         AND m.tipo_conta IN ('veterinario', 'petshop', 'servico', 'clinica', 'farmacia')
         AND m.status_verificacao = 'aprovado'
+        ${FILTRO_PAGAMENTO}
         AND (
           u.nome ILIKE $1 OR
           m.especialidade ILIKE $1
@@ -105,7 +119,8 @@ exports.buscarMedicoPorId = async (req, res) => {
         u.id, u.nome,
         m.especialidade, m.endereco, m.foto_url, m.nota,
         m.cidade, m.crm, m.valor_consulta, m.tipo_conta,
-        m.exames_procedimentos, m.telemedicina, m.atendimento_domiciliar
+        m.exames_procedimentos, m.telemedicina, m.atendimento_domiciliar,
+        (m.mp_conectado IS TRUE AND m.mp_access_token IS NOT NULL AND EXISTS (SELECT 1 FROM precos_servicos ps WHERE ps.usuario_id = u.id)) AS aceita_pagamento
       FROM usuarios u
       JOIN medicos m ON m.usuario_id = u.id
       WHERE u.id = $1 AND m.status_verificacao = 'aprovado'

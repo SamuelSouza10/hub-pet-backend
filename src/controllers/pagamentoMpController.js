@@ -68,6 +68,9 @@ exports.criarPreferencia = async (req, res) => {
     );
     if (consultaResult.rows.length === 0) return res.status(404).json({ erro: 'Consulta não encontrada' });
     const consulta = consultaResult.rows[0];
+    if (['expirada', 'cancelada', 'recusado'].includes(consulta.status)) {
+      return res.status(400).json({ erro: 'Essa solicitação não está mais ativa.' });
+    }
 
     // ✅ NOVO: não abre outro checkout pra uma consulta que já foi paga
     // (evita pagamento em duplicidade).
@@ -116,7 +119,7 @@ exports.criarPreferencia = async (req, res) => {
     // deixamos o tutor pagar por Pix ANTES da confirmação — e
     // devolvemos na hora se o profissional recusar depois
     // (ver estornarSeNecessario, chamada em consultasController.js).
-    const jaAceita = consulta.status === 'aceito';
+    const jaAceita = consulta.status === 'aceito' || consulta.status === 'aguardando_pagamento'; // estorno agora é automático em todo cancelamento
     const corpoPreferencia = {
       items: [{
         title: `Consulta ${consulta.especialidade || ''} — H.U.B. Pet`.trim(),
@@ -275,7 +278,7 @@ exports.criarPreferenciaFarmacia = async (req, res) => {
 exports.retorno = (req, res) => {
   const { status } = req.query;
   const mapa = {
-    success: { emoji: '✅', titulo: 'Pagamento aprovado!', texto: 'Sua consulta já está confirmada.' },
+    success: { emoji: '✅', titulo: 'Pagamento aprovado!', texto: 'Sua solicitação foi enviada ao profissional. Se ele não puder atender, o valor é devolvido.' },
     pending: { emoji: '⏳', titulo: 'Pagamento em análise', texto: 'Assim que for aprovado, você recebe a confirmação.' },
     failure: { emoji: '⚠️', titulo: 'Pagamento não concluído', texto: 'Tente novamente pelo app.' },
   };
@@ -477,6 +480,10 @@ async function processarNotificacaoPagamento(paymentId, userIdMp) {
       await client.query('UPDATE consultas SET pago = $1 WHERE id = $2', [novoStatus === 'aprovado', alvo.consulta_id]);
     }
     await client.query('COMMIT');
+    if (novoStatus === 'aprovado' && alvo.consulta_id) {
+      require('../services/pagueParaSolicitar').aoPagamentoAprovado(alvo.consulta_id)
+        .catch((e) => console.error('pps aoPagamentoAprovado:', e.message));
+    }
     // Estorno confirmado pelo Mercado Pago (até se feito à mão no painel deles): fecha o alerta no /admin.
     if (novoStatus === 'estornado') {
       await resolverAlertas([
@@ -587,6 +594,7 @@ async function _estornarPorColuna(coluna, id, chaveIdempotencia, descricao, tent
   }
 }
 
+exports.derivarServicoId = derivarServicoId;
 exports.estornarSeNecessario = (consulta_id, tentativa = 1) =>
   _estornarPorColuna('consulta_id', consulta_id, `estorno-consulta-${consulta_id}`, `consulta ${consulta_id}`, tentativa);
 

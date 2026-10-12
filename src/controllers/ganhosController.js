@@ -37,6 +37,26 @@ exports.ganhos = async (req, res) => {
       serie.push({ mes: chave, liquido: num(mapa[chave]?.liquido), qtd: mapa[chave]?.qtd || 0 });
     }
 
+    // Dia da semana (fuso de Brasília). criado_em é TIMESTAMP gravado em UTC.
+    const dows = await pool.query(
+      `SELECT EXTRACT(DOW FROM (criado_em AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo'))::int AS dia,
+              COUNT(*)::int AS qtd,
+              COALESCE(SUM(valor_total - taxa_plataforma),0) AS liquido
+         FROM pagamentos_mp WHERE medico_id = $1 AND status = 'aprovado'
+        GROUP BY 1`, [medico_id]);
+    const porDia = Array.from({ length: 7 }, (_, d) => {
+      const r = dows.rows.find(x => x.dia === d);
+      return { dia: d, qtd: r ? r.qtd : 0, liquido: num(r?.liquido) };
+    });
+
+    // Melhor mês de todos os tempos.
+    const melhor = await pool.query(
+      `SELECT to_char(date_trunc('month', criado_em), 'YYYY-MM') AS mes,
+              COUNT(*)::int AS qtd,
+              COALESCE(SUM(valor_total - taxa_plataforma),0) AS liquido
+         FROM pagamentos_mp WHERE medico_id = $1 AND status = 'aprovado'
+        GROUP BY 1 ORDER BY liquido DESC LIMIT 1`, [medico_id]);
+
     const servicos = await pool.query(
       `SELECT COALESCE(NULLIF(c.especialidade,''), CASE WHEN p.solicitacao_farmacia_id IS NOT NULL THEN 'Farmácia' ELSE 'Outros' END) AS nome,
               COUNT(*)::int AS qtd,
@@ -64,6 +84,8 @@ exports.ganhos = async (req, res) => {
       total: { qtd: t.qtd, bruto: num(t.bruto), taxa: num(t.taxa), liquido: num(t.liquido) },
       mes_atual: serie[5], mes_anterior: serie[4],
       meses: serie,
+      por_dia_semana: porDia,
+      melhor_mes: melhor.rows[0] ? { mes: melhor.rows[0].mes, qtd: melhor.rows[0].qtd, liquido: num(melhor.rows[0].liquido) } : null,
       por_servico: servicos.rows.map(r => ({ nome: r.nome, qtd: r.qtd, liquido: num(r.liquido) })),
       recentes: recentes.rows.map(r => ({
         id: r.id, data: r.criado_em, descricao: r.descricao, pet: r.pet || null,
